@@ -1,0 +1,12 @@
+boto3
+awscli
+botocore
+requests
+flask
+requests>=2.31.0
+sseclient-py>=1.7.2
+click
+anyio
+mcp
+starlette
+pydantic

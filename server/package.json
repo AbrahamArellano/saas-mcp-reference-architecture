@@ -1,0 +1,27 @@
+{
+  "type": "module",
+  "version": "0.0.31",
+  "author": "Anton Aleksandrov",
+  "license": "Apache-2.0",
+  "description": "A sample stateless MCP Server running on ECS Fargate",
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.806.0",
+    "@aws-sdk/client-s3": "^3.808.0",
+    "@aws-sdk/client-sts": "^3.806.0",
+    "@aws-sdk/lib-dynamodb": "^3.806.0",
+    "@faker-js/faker": "^9.7.0",
+    "@modelcontextprotocol/sdk": "^1.11.0",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "express-http-context": "^2.0.1",
+    "jsonwebtoken": "^9.0.2",
+    "log4js": "^6.9.1",
+    "typescript": "^5.8.3"
+  },
+  "scripts": {
+    "start": "npx tsx --env-file=.env --watch index.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.17"
+  }
+}

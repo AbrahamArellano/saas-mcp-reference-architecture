@@ -1,0 +1,40 @@
+{
+	"models": [
+		{
+			"model_id": "us.amazon.nova-pro-v1:0",
+			"model_name": "Amazon Nova Pro v1"
+		},
+		{
+			"model_id": "us.amazon.nova-lite-v1:0",
+			"model_name": "Amazon Nova Lite v1"
+		},
+		{
+			"model_id": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+			"model_name": "Claude 3.5 Sonnet v2"
+		},
+		{
+			"model_id": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+			"model_name": "Claude 3.7 Sonnet"
+		}
+	],
+	"mcpServers": {
+		"cot": {
+			"command": "npx",
+			"args": [
+			  "-y",
+			  "@modelcontextprotocol/server-sequential-thinking"
+			]
+		},
+		"local_fs": {
+			"command": "npx",
+			"args": [
+				"-y",
+				"@modelcontextprotocol/server-filesystem",
+				"./docs"
+			],
+			"env": {},
+			"description": "Local File System I/O",
+			"status": 1
+		}
+	}
+}
