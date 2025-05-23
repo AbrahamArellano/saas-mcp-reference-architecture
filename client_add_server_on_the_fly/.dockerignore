@@ -1,0 +1,35 @@
+# CDK build artifacts
+cdk/
+**/cdk.out/
+**/node_modules/
+
+# Python artifacts
+.venv/
+**/.venv/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Application logs and temp files
+logs/
+tmp/
+*.log
+
+# Git and IDE
+.git/
+.gitignore
+.vscode/
+.idea/
+
+# Environment files
+.env
+.env.*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Documentation
+README.md
+**/*.md
