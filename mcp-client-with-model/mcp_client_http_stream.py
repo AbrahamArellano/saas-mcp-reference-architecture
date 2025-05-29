@@ -169,39 +169,25 @@ async def main():
         tools = await client.get_tools()
         logger.info("\nAvailable tools:")
         for tool in tools:
-            logger.info(f"- {tool.name}: {tool.description}")
-            logger.info(f"  Input Schema: {tool.inputSchema}")
+            logger.info(f"- {tool.name}: {tool.description}; Input Schema: {tool.inputSchema}")
 
         # Call tool
         tool_result = await client.call_tool(
-            "ping",
+            "loyalty_info",
             {}
         )
         logger.info(f"\nTool execution result: {tool_result}")
 
-        # # Call tool
-        # tool_result = await client.call_tool(
-        #     "start-notification-stream",
-        #     {
-        #         "interval": 1.0,
-        #         "count": 5,
-        #         "caller": "test-client"
-        #     }
-        # )
-        # logger.info(f"\nTool execution result: {tool_result}")
-        #
         # Get and display resources
         try:
             resources = await client.get_resources()
             logger.info("\nAvailable resources:")
             for resource in resources:
-                logger.info(f"- Resource ID: {resource.id}")
-                logger.info(f"  Name: {resource.name}")
-                logger.info(f"  URI: {resource.uri}")
+                logger.info(f"  Name: {resource.name}; Description: {resource.description}; URI: {resource.uri}")
         except Exception as e:
             logger.warning(f"Could not fetch resources: {e}")
-        #
-        # # Get and display prompts
+
+        # Get and display prompts
         # try:
         #     prompts = await client.get_prompts()
         #     logger.info("\nAvailable prompts:")

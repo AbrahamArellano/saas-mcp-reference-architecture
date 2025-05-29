@@ -23,13 +23,17 @@ import uuid
 import threading
 from contextlib import asynccontextmanager
 import os
+import base64
+import requests
+import jwt
+from jwt.algorithms import RSAAlgorithm
 from botocore.config import Config
 from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, HTTPException, Depends, BackgroundTasks, Security
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security.api_key import APIKeyHeader
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, OAuth2AuthorizationCodeBearer
 from fastapi import Security
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -47,6 +51,16 @@ user_mcp_server_configs = {}  # User-specific MCP server configuration user_id -
 MAX_TURNS = int(os.environ.get("MAX_TURNS",200))
 INACTIVE_TIME = int(os.environ.get("INACTIVE_TIME",60*24))  #mins
 
+# Cognito configuration
+COGNITO_REGION = os.environ.get("COGNITO_REGION", "us-east-1")
+COGNITO_USER_POOL_ID = os.environ.get("COGNITO_USER_POOL_ID", "")
+COGNITO_APP_CLIENT_ID = os.environ.get("COGNITO_APP_CLIENT_ID", "")
+COGNITO_JWKS_URL = f"https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{COGNITO_USER_POOL_ID}/.well-known/jwks.json"
+
+# Cache for JWKS keys
+jwks_client = None
+jwks_cache = {}
+jwks_last_updated = None
 
 API_KEY = os.environ.get("API_KEY")
 security = HTTPBearer()
@@ -54,7 +68,7 @@ security = HTTPBearer()
 logger = logging.getLogger(__name__)
 
 
-# 用户会话管理
+# User session management
 class UserSession:
     def __init__(self, user_id):
         self.user_id = user_id
@@ -66,6 +80,7 @@ class UserSession:
         self.last_active = datetime.now()
         self.session_id = str(uuid.uuid4())
         self.lock = asyncio.Lock()  # For synchronizing operations within the session
+        self.user_info = {}  # Store additional user information from Cognito/ALB
 
     async def cleanup(self):
         """Clean up user session resources"""
@@ -82,9 +97,104 @@ user_sessions = {}
 # Session lock to prevent race conditions in session creation and access
 session_lock = threading.RLock()
 
+async def get_jwks():
+    """Fetch and cache the JWKS (JSON Web Key Set) from Cognito"""
+    global jwks_cache, jwks_last_updated
+    
+    # If we have a cached version that's less than 24 hours old, use it
+    if jwks_last_updated and (datetime.now() - jwks_last_updated).total_seconds() < 86400:
+        return jwks_cache
+    
+    try:
+        response = requests.get(COGNITO_JWKS_URL)
+        response.raise_for_status()
+        jwks_cache = response.json()
+        jwks_last_updated = datetime.now()
+        return jwks_cache
+    except Exception as e:
+        logger.error(f"Failed to fetch JWKS: {e}")
+        # If we have a cached version, use it even if it's old
+        if jwks_cache:
+            return jwks_cache
+        raise HTTPException(status_code=500, detail="Failed to fetch authentication keys")
+
+async def get_cognito_user(token: str):
+    """Validate Cognito JWT token and extract user information"""
+    if not COGNITO_USER_POOL_ID or not COGNITO_APP_CLIENT_ID:
+        # If Cognito is not configured, skip validation
+        return None
+    
+    try:
+        # Get the key ID from the token header
+        header = jwt.get_unverified_header(token)
+        kid = header.get('kid')
+        
+        if not kid:
+            raise HTTPException(status_code=401, detail="Invalid token format")
+        
+        # Get the public keys from Cognito
+        jwks = await get_jwks()
+        
+        # Find the key that matches the key ID in the token
+        key = None
+        for jwk in jwks.get('keys', []):
+            if jwk.get('kid') == kid:
+                key = jwk
+                break
+        
+        if not key:
+            raise HTTPException(status_code=401, detail="Key not found")
+        
+        # Convert the JWK to a PEM format that PyJWT can use
+        public_key = RSAAlgorithm.from_jwk(json.dumps(key))
+        
+        # Verify and decode the token
+        payload = jwt.decode(
+            token,
+            public_key,
+            algorithms=['RS256'],
+            audience=COGNITO_APP_CLIENT_ID,
+            options={"verify_exp": True}
+        )
+        
+        # Extract user information
+        user_info = {
+            'sub': payload.get('sub'),
+            'email': payload.get('email'),
+            'username': payload.get('cognito:username'),
+            'groups': payload.get('cognito:groups', [])
+        }
+        
+        return user_info
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired")
+    except jwt.InvalidTokenError as e:
+        logger.error(f"Invalid token: {e}")
+        raise HTTPException(status_code=401, detail="Invalid token")
+    except Exception as e:
+        logger.error(f"Token validation error: {e}")
+        raise HTTPException(status_code=401, detail="Token validation failed")
+
 async def get_api_key(auth: HTTPAuthorizationCredentials = Security(security)):
-    if auth.credentials == API_KEY:
-        return auth.credentials
+    """Validate API key or Cognito token"""
+    token = auth.credentials
+    
+    # First try to validate as Cognito token if Cognito is configured
+    if COGNITO_USER_POOL_ID and COGNITO_APP_CLIENT_ID:
+        try:
+            logger.info(f"Logging with Cognito Credentials using token {token}")
+            user_info = await get_cognito_user(token)
+            if user_info:
+                return token
+        except HTTPException:
+            # If token validation fails, fall back to API key validation
+            logger.error(f"Cognito Token error, fall back to API key validation")
+            pass
+    
+    # Validate as API key
+    if token == API_KEY:
+        return token
+    
     raise HTTPException(status_code=403, detail="Could not validate credentials")
 
 # Save global MCP server configuration
@@ -134,7 +244,6 @@ async def load_user_mcp_configs():
 
 async def save_user_mcp_configs():
     global user_mcp_server_configs
-    # user_mcp_server_configs[user_id] = server_configs
     """Save user MCP server configurations"""
     # Save to file or database
     try:
@@ -173,7 +282,7 @@ async def initialize_user_servers(session: UserSession):
                     server_url=config["server_url"],
                     http_headers=config.get("http_headers", {}),
                     http_timeout=config.get("http_timeout", 30),
-                    http_sse_timeout=config.get("http_sse_timeout", 300)
+                    # http_sse_timeout=config.get("http_sse_timeout", 300)
                 )
             else:
                 # Standard connection
@@ -198,12 +307,45 @@ async def get_or_create_user_session(
     request: Request,
     auth: HTTPAuthorizationCredentials = Security(security)
 ):
-    """Get or create user session, prioritizing X-User-ID header, and automatically initialize user servers"""
-    # First verify API key
-    await get_api_key(auth)
+    """Get or create user session, prioritizing Cognito identity, then X-User-ID header, and finally API key as fallback ID"""
+    # First verify API key or Cognito token
+    token = await get_api_key(auth)
     
-    # Try to get user ID from request header, if not exist use API key as fallback ID
-    user_id = request.headers.get("X-User-ID", auth.credentials)
+    # Try to get user ID from Cognito token
+    user_id = None
+    if COGNITO_USER_POOL_ID and COGNITO_APP_CLIENT_ID:
+        try:
+            user_info = await get_cognito_user(token)
+            if user_info and user_info.get('sub'):
+                user_id = user_info.get('sub')
+                # Store user info in request state for later use
+                request.state.user_info = user_info
+        except Exception as e:
+            logger.error(f"Failed to extract user from Cognito token: {e}")
+    
+    # If no Cognito user, try to get from ALB headers
+    if not user_id:
+        # Check for ALB authentication headers
+        if 'x-amzn-oidc-identity' in request.headers:
+            user_id = request.headers.get('x-amzn-oidc-identity')
+            
+            # Try to extract more user info from the data JWT if available
+            if 'x-amzn-oidc-data' in request.headers:
+                try:
+                    jwt_data = request.headers.get('x-amzn-oidc-data')
+                    # Just decode without verification since ALB already verified it
+                    payload = jwt.decode(jwt_data, options={"verify_signature": False})
+                    request.state.user_info = {
+                        'sub': payload.get('sub'),
+                        'email': payload.get('email'),
+                        'username': payload.get('preferred_username', payload.get('cognito:username')),
+                    }
+                except Exception as e:
+                    logger.error(f"Failed to decode ALB JWT data: {e}")
+    
+    # If still no user ID, try X-User-ID header or use API key as fallback
+    if not user_id:
+        user_id = request.headers.get("X-User-ID", token)
     
     with session_lock:
         is_new_session = user_id not in user_sessions
@@ -214,6 +356,10 @@ async def get_or_create_user_session(
         # Update last active time
         user_sessions[user_id].last_active = datetime.now()
         session = user_sessions[user_id]
+        
+        # Store user info in session if available
+        if hasattr(request, 'state') and hasattr(request.state, 'user_info'):
+            session.user_info = request.state.user_info
     
     # If new session, initialize user's MCP servers
     if is_new_session:
@@ -283,7 +429,7 @@ class AddMCPServerRequest(BaseModel):
     server_url: Optional[str] = None  # For HTTP connections
     http_headers: Optional[Dict[str, str]] = Field(default_factory=dict)  # HTTP headers
     http_timeout: Optional[int] = 30  # HTTP timeout in seconds
-    http_sse_timeout: Optional[int] = 300  # HTTP SSE timeout in seconds
+    # http_sse_timeout: Optional[int] = 300  # HTTP SSE timeout in seconds
     
 class AddMCPServerResponse(BaseModel):
     errno: int
@@ -343,6 +489,31 @@ async def validation_exception_handler(request, exc):
                 msg=str(exc.errors())
             ).model_dump())
 
+@app.get("/v1/user/info")
+async def get_user_info(
+    request: Request,
+    auth: HTTPAuthorizationCredentials = Security(security)
+):
+    """Get information about the authenticated user"""
+    # Get user session
+    session = await get_or_create_user_session(request, auth)
+    
+    # Return user information
+    user_info = {
+        "user_id": session.user_id,
+        "session_id": session.session_id,
+    }
+    
+    # Add additional user info if available
+    if hasattr(session, 'user_info') and session.user_info:
+        user_info.update({
+            "email": session.user_info.get('email'),
+            "username": session.user_info.get('username'),
+            "groups": session.user_info.get('groups', []),
+        })
+    
+    return JSONResponse(content=user_info)
+
 @app.get("/v1/list/models")
 async def list_models(
     request: Request,
@@ -368,11 +539,40 @@ async def list_mcp_server(
     # Add user-specific servers
     for server_id in session.mcp_clients:
         if server_id not in server_list:
-            server_list[server_id] = f"User-specific server: {server_id}"
+            server_list[server_id] = f"User-added: {server_id}"
     
     return JSONResponse(content={"servers": [{
         "server_id": sid, 
         "server_name": name} for sid, name in server_list.items()]})
+
+@app.get("/v1/list/mcp_server_config/{server_id}")
+async def list_mcp_server(
+    server_id: str,
+    request: Request,
+    auth: HTTPAuthorizationCredentials = Security(security)
+):
+    # Get user session
+    session = await get_or_create_user_session(request, auth)
+    user_id = session.user_id
+        
+    global user_mcp_server_configs
+    return JSONResponse(content={
+        "server_config": user_mcp_server_configs[user_id][server_id]})
+
+@app.get("/v1/list/mcp_server_tools/{server_id}")
+async def list_mcp_server(
+    server_id: str,
+    request: Request,
+    auth: HTTPAuthorizationCredentials = Security(security)
+):
+    # Get user session
+    session = await get_or_create_user_session(request, auth)
+    user_id = session.user_id
+    
+    tool_config_response = await session.mcp_clients[server_id].get_tool_config(server_id=server_id)
+    # global user_mcp_server_configs
+    return JSONResponse(content={
+        "tools_config": tool_config_response})
 
 @app.post("/v1/add/mcp_server")
 async def add_mcp_server(
@@ -421,7 +621,7 @@ async def add_mcp_server(
                 data.server_url = server_conf["server_url"]
                 data.http_headers = server_conf.get("http_headers", {})
                 data.http_timeout = server_conf.get("http_timeout", 30)
-                data.http_sse_timeout = server_conf.get("http_sse_timeout", 300)
+                # data.http_sse_timeout = server_conf.get("http_sse_timeout", 300)
             else:
                 # This is a local server configuration
                 server_cmd = server_conf["command"]
@@ -437,7 +637,7 @@ async def add_mcp_server(
                     server_url=data.server_url,
                     http_headers=data.http_headers,
                     http_timeout=data.http_timeout,
-                    http_sse_timeout=data.http_sse_timeout
+                    # http_sse_timeout=data.http_sse_timeout
                 )
             else:
                 # Existing connection logic
@@ -460,7 +660,7 @@ async def add_mcp_server(
                 server_config["server_url"] = data.server_url
                 server_config["http_headers"] = data.http_headers
                 server_config["http_timeout"] = data.http_timeout
-                server_config["http_sse_timeout"] = data.http_sse_timeout
+                # server_config["http_sse_timeout"] = data.http_sse_timeout
             else:
                 # Local server configuration
                 server_config["command"] = server_cmd
@@ -790,7 +990,6 @@ if __name__ == '__main__':
                 # Load model configurations
                 for model_conf in conf.get('models', []):
                     llm_model_list[model_conf['model_id']] = model_conf['model_name']
-        # logger.info(f"shared_mcp_server_list:{shared_mcp_server_list}")
         config = uvicorn.Config(app, host=args.host, port=args.port, loop=loop)
         server = uvicorn.Server(config)
         loop.run_until_complete(server.serve())

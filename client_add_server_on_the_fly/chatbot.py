@@ -15,6 +15,7 @@ import uuid
 from io import BytesIO
 from streamlit_local_storage import LocalStorage
 import copy
+import subprocess
 from dotenv import load_dotenv
 load_dotenv() # load env vars from .env
 API_KEY = os.environ.get("API_KEY")
@@ -24,10 +25,89 @@ mcp_base_url = os.environ.get('MCP_BASE_URL')
 mcp_command_list = ["uvx", "npx", "node", "python","docker","uv"]
 COOKIE_NAME = "mcp_chat_user_id"
 local_storage = LocalStorage()
+
+# Get commit ID if available
+try:
+    commit_id = os.environ.get('COMMIT_ID', None)
+    if not commit_id:
+        # Try to get it from git if running locally
+        try:
+            result = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'], 
+                                  stdout=subprocess.PIPE, 
+                                  stderr=subprocess.PIPE,
+                                  text=True,
+                                  timeout=1)
+            if result.returncode == 0:
+                commit_id = result.stdout.strip()
+            else:
+                commit_id = 'unknown'
+        except Exception:
+            commit_id = 'unknown'
+except Exception:
+    commit_id = 'unknown'
+
+# Cognito authentication handling
+def get_cognito_token_from_url():
+    """Extract Cognito token from URL parameters (for redirect flow)"""
+    query_params = st.query_params
+    if 'id_token' in query_params:
+        # logging.info(f"Cognito id_token: {query_params['id_token']}")
+        return query_params['id_token']
+    return None
+
+def get_cognito_token_from_headers():
+    """Extract Cognito token from ALB headers using st.context.header"""
+    try:
+        # Direct access to ALB Cognito headers using st.context.header (available in Streamlit v1.37.0+)
+        oidc_data = st.context.header.get("x-amzn-oidc-data")
+        oidc_identity = st.context.header.get("x-amzn-oidc-identity")
+        access_token = st.context.header.get("x-amzn-oidc-accesstoken")
+        
+        if oidc_data:
+            return oidc_data
+        elif access_token:
+            return access_token
+    except Exception as e:
+        st.debug(f"Error accessing ALB headers: {e}")
+    
+    return None
+
 # User session management
 def initialize_user_session():
     """Initialize user session, ensuring each user has a unique identifier"""    
-    # Try to get user ID from cookie
+    # First check for existing token in session state
+    if 'cognito_token' in st.session_state:
+        cognito_token = st.session_state.cognito_token
+    else:
+        # Try to get token from URL or headers
+        cognito_token = get_cognito_token_from_url() or get_cognito_token_from_headers()
+        
+        # Store the token in session state if found
+        if cognito_token:
+            st.session_state.cognito_token = cognito_token
+    
+    # If we have a token, try to authenticate with it
+    if cognito_token:
+        # Try to get user info from backend
+        try:
+            response = requests.get(
+                f"{mcp_base_url.rstrip('/')}/v1/user/info",
+                headers={'Authorization': f'Bearer {cognito_token}'}
+            )
+            if response.status_code == 200:
+                user_info = response.json()
+                st.session_state.user_id = user_info.get('user_id')
+                st.session_state.user_info = user_info
+                local_storage.setItem(COOKIE_NAME, st.session_state.user_id)
+                logging.info(f"Authenticated with Cognito: {st.session_state.user_id}")
+                return
+        except Exception as e:
+            logging.error(f"Failed to get user info from Cognito token: {e}")
+            # Clear invalid token
+            if 'cognito_token' in st.session_state:
+                del st.session_state.cognito_token
+    
+    # If no Cognito token or authentication failed, fall back to local user ID
     if "user_id" not in st.session_state:
         if local_storage and local_storage.getItem(COOKIE_NAME):
             st.session_state.user_id = local_storage.getItem(COOKIE_NAME)
@@ -56,6 +136,13 @@ initialize_user_session()
     
 def get_auth_headers():
     """Build authentication headers containing user identity"""
+    # If we have a Cognito token, use it for authentication
+    if 'cognito_token' in st.session_state:
+        return {
+            'Authorization': f'Bearer {st.session_state.cognito_token}'
+        }
+    
+    # Otherwise fall back to API key with X-User-ID
     headers = {
         'Authorization': f'Bearer {API_KEY}',
         'X-User-ID': st.session_state.user_id  # Add user ID header
@@ -84,6 +171,29 @@ def request_list_mcp_servers():
         logging.error('request list mcp servers error: %s' % e)
     return mcp_servers
 
+def request_list_mcp_server_config(mcp_server_id: str):
+    url = mcp_base_url.rstrip('/') + '/v1/list/mcp_server_config/' + mcp_server_id
+    server_config = {}
+    try:
+        response = requests.get(url, headers=get_auth_headers())
+        data = response.json()
+        server_config = data.get('server_config', [])
+    except Exception as e:
+        logging.error('request list server tools error: %s' % e)
+    return server_config
+
+def request_list_mcp_server_tools(mcp_server_id: str):
+    url = mcp_base_url.rstrip('/') + '/v1/list/mcp_server_tools/' + mcp_server_id
+    tools_config = {}
+    try:
+        response = requests.get(url, headers=get_auth_headers())
+        data = response.json()
+        tools_config = data.get('tools_config', [])
+        logging.info(f'Server ID: {mcp_server_id}, tools_config: {tools_config}')
+    except Exception as e:
+        logging.error('request list server tools error: %s' % e)
+    return tools_config
+
 def request_add_mcp_server(server_id, server_name, command, args=[], env=None, config_json={}):
     url = mcp_base_url.rstrip('/') + '/v1/add/mcp_server'
     status = False
@@ -104,6 +214,28 @@ def request_add_mcp_server(server_id, server_name, command, args=[], env=None, c
     except Exception as e:
         msg = "Add MCP server occurred errors!"
         logging.error('request add mcp servers error: %s' % e)
+    return status, msg
+        
+def request_delete_mcp_server(server_id):
+    """
+    Send a request to delete an MCP server
+    
+    Args:
+        server_id (str): The ID of the server to delete
+        
+    Returns:
+        tuple: (success, message) where success is a boolean and message is a string
+    """
+    url = mcp_base_url.rstrip('/') + f'/v1/remove/mcp_server/{server_id}'
+    status = False
+    try:
+        response = requests.delete(url, headers=get_auth_headers())
+        data = response.json()
+        status = data['errno'] == 0
+        msg = data['msg']
+    except Exception as e:
+        msg = f"Delete MCP server error: {str(e)}"
+        logging.error(f'request delete mcp server error: {e}')
     return status, msg
 
 def process_stream_response(response):
@@ -184,7 +316,7 @@ if not 'mcp_servers' in st.session_state:
         st.session_state.mcp_servers[x['server_name']] = x['server_id']
 
 if "system_prompt" not in st.session_state:
-    st.session_state.system_prompt = "You are a deep researcher"
+    st.session_state.system_prompt = "You are a helpful assistant"
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -201,8 +333,6 @@ if "enable_stream" not in st.session_state:
 if "enable_thinking" not in st.session_state:
     st.session_state.enable_thinking = False
 
-
-    
 # Function to clear conversation history
 def clear_conversation():
     st.session_state.messages = [
@@ -279,12 +409,133 @@ def add_new_mcp_server_handle():
     st.session_state.new_mcp_server_fd_status = status
     st.session_state.new_mcp_server_fd_msg = msg
 
+def show_delete_confirmation():
+    """Set flag to show delete confirmation dialog and update selected server ID"""
+    if 'server_to_delete' in st.session_state and st.session_state.server_to_delete:
+        server_name = st.session_state.server_to_delete
+        if server_name in st.session_state.mcp_servers:
+            st.session_state.selected_server_id = st.session_state.mcp_servers[server_name]
+        st.session_state.show_delete_confirmation = True
+        # Set a flag to trigger rerun after the callback completes
+        st.session_state.should_rerun = True
+
+def cancel_delete():
+    """Cancel the delete operation"""
+    st.session_state.show_delete_confirmation = False
+    # Set a flag to trigger rerun after the callback completes
+    st.session_state.should_rerun = True
+
+def confirm_delete():
+    """Confirm and execute the delete operation"""
+    st.session_state.show_delete_confirmation = False
+    delete_mcp_server_handle()
+    st.session_state.should_rerun = True
+
+def delete_mcp_server_handle():
+    """Handle the deletion of an MCP server"""
+    if 'server_to_delete' in st.session_state and st.session_state.server_to_delete:
+        server_name = st.session_state.server_to_delete
+        server_id = st.session_state.mcp_servers[server_name]
+        
+        logging.info(f'User {st.session_state.user_id} deleting MCP server: {server_id}:{server_name}')
+        
+        with st.spinner('Deleting the server...'):
+            status, msg = request_delete_mcp_server(server_id)
+        
+        if status:
+            # Remove from the dictionary
+            if server_name in st.session_state.mcp_servers:
+                del st.session_state.mcp_servers[server_name]
+        
+        st.session_state.delete_server_status = status
+        st.session_state.delete_server_msg = msg
+        
+        if status:
+            st.session_state.should_rerun = True
+
+
+@st.dialog('MCP Server Tools')
+def explore_edit_mcp_server():
+    # Select server from dropdown outside the form
+    mcp_server_name_explore_edit = st.selectbox(
+        'Available MCP servers',
+        list(st.session_state.mcp_servers),
+        key="dialog_server_selector"
+    )
+    
+    # Get server details based on the selected server
+    server_name = mcp_server_name_explore_edit
+    server_id = st.session_state.mcp_servers[server_name]
+    server_config_raw_json = request_list_mcp_server_config(server_id)
+    server_tools_raw_json = request_list_mcp_server_tools(server_id)
+    
+    # Format JSON with proper indentation for better readability
+    server_config_formatted_json = ""
+    try:
+        if server_config_raw_json:
+            server_config_formatted_json = json.dumps(server_config_raw_json, indent=2)
+    except:
+        server_config_formatted_json = server_config_raw_json
+    
+    server_tools_formatted_json = ""
+    try:
+        if server_tools_raw_json:
+            server_tools_formatted_json = json.dumps(server_tools_raw_json, indent=2)
+    except:
+        server_tools_formatted_json = server_tools_raw_json
+    
+    st.markdown("### Server id")
+    st.markdown(server_id)
+
+    # Display server configuration with syntax highlighting
+    st.markdown("### Server Configuration")
+    st.code(json.dumps(server_config_raw_json, indent=2), language="json")
+
+    # Display server tools configuration with syntax highlighting
+    st.markdown("### Server Tools Configuration")
+    st.code(json.dumps(server_tools_raw_json, indent=2), language="json")
+
 
 @st.dialog('MCP Server Configuration')
 def add_new_mcp_server():
-    with st.form("my_form"):
-        st.write("**Add New MCP Server**")
-
+    # Initialize session state variables for deletion if they don't exist
+    if 'delete_server_status' not in st.session_state:
+        st.session_state.delete_server_status = False
+    if 'delete_server_msg' not in st.session_state:
+        st.session_state.delete_server_msg = ""
+    
+    # Create tabs with Explore tab first, followed by Add and Delete
+    explore_tab, add_tab, delete_tab = st.tabs(["Explore MCP Server Details", "Add New MCP Server", "Delete MCP Server"])
+    
+    # Explore MCP Server Details tab (now first)
+    with explore_tab:
+        # Select server from dropdown
+        mcp_server_name_explore = st.selectbox(
+            'Select MCP server to explore',
+            list(st.session_state.mcp_servers),
+            key="explore_server_selector"
+        )
+        
+        if mcp_server_name_explore:
+            # Get server details based on the selected server
+            server_id = st.session_state.mcp_servers[mcp_server_name_explore]
+            server_config_raw_json = request_list_mcp_server_config(server_id)
+            server_tools_raw_json = request_list_mcp_server_tools(server_id)
+            
+            # Display server ID
+            st.markdown("### Server ID")
+            st.markdown(server_id)
+            
+            # Display server configuration with syntax highlighting
+            st.markdown("### Server Configuration")
+            st.code(json.dumps(server_config_raw_json, indent=2), language="json")
+            
+            # Display server tools configuration with syntax highlighting
+            st.markdown("### Server Tools Configuration")
+            st.code(json.dumps(server_tools_raw_json, indent=2), language="json")
+    
+    # Add New MCP Server tab
+    with add_tab:
         if 'new_mcp_server_fd_status' in st.session_state:
             if st.session_state.new_mcp_server_fd_status:
                 succ1 = st.success(st.session_state.new_mcp_server_fd_msg, icon="✅")
@@ -298,33 +549,99 @@ def add_new_mcp_server():
                 st.session_state.new_mcp_server_args = ""
                 st.session_state.new_mcp_server_env = ""
                 st.session_state.new_mcp_server_json_config = ""
+                st.session_state.should_rerun = True
             else:
                 if st.session_state.new_mcp_server_fd_msg:
                     st.error(st.session_state.new_mcp_server_fd_msg, icon="🚨")
 
-        new_mcp_server_name = st.text_input("Server Name", 
+        # Create a form for adding a new MCP server
+        with st.form("add_mcp_server_form"):
+            new_mcp_server_name = st.text_input("Server Name", 
                                             value="", placeholder="Name description of server", key="new_mcp_server_name")
+            
+            new_mcp_server_config_json = st.text_area("Use JSON Configuration", 
+                                        height=128,
+                                        value="", key="new_mcp_server_json_config",
+                                        placeholder="Need to provide a valid JSON dictionary")
+            
+            # Add JSON preview with syntax highlighting if valid JSON is entered
+            if new_mcp_server_config_json:
+                try:
+                    parsed_json = json.loads(new_mcp_server_config_json)
+                    st.markdown("### JSON Preview")
+                    st.code(json.dumps(parsed_json, indent=2), language="json")
+                except json.JSONDecodeError:
+                    st.error("Invalid JSON format")
+                    
+            with st.expander(label='Input Field Configuration', expanded=False):
+                new_mcp_server_id = st.text_input("Server ID", 
+                                                value="", placeholder="server id", key="new_mcp_server_id")
+
+                new_mcp_server_cmd = st.selectbox("Run Command", 
+                                                mcp_command_list, key="new_mcp_server_cmd")
+                new_mcp_server_args = st.text_area("Run Arguments", 
+                                                value="", key="new_mcp_server_args",
+                                                placeholder="mcp-server-git --repository path/to/git/repo")
+                new_mcp_server_env = st.text_area("Environment Variables", 
+                                                value="", key="new_mcp_server_env",
+                                                placeholder="Need to provide a valid JSON dictionary")
+            
+            # Add button inside the form
+            add_button = st.form_submit_button("Add Server", 
+                                        on_click=add_new_mcp_server_handle,
+                                        disabled=False)
+    with delete_tab:
+        # Display status messages for deletion
+        if 'delete_server_status' in st.session_state:
+            if st.session_state.delete_server_status:
+                st.success(st.session_state.delete_server_msg, icon="✅")
+            else:
+                if 'delete_server_msg' in st.session_state and st.session_state.delete_server_msg:
+                    st.error(st.session_state.delete_server_msg, icon="🚨")
         
-        new_mcp_server_config_json = st.text_area("Use JSON Configuration", 
-                                    height=128,
-                                    value="", key="new_mcp_server_json_config",
-                                    placeholder="Need to provide a valid JSON dictionary")
-        with st.expander(label='Input Field Configuration', expanded=False):
-            new_mcp_server_id = st.text_input("Server ID", 
-                                            value="", placeholder="server id", key="new_mcp_server_id")
-
-            new_mcp_server_cmd = st.selectbox("Run Command", 
-                                            mcp_command_list, key="new_mcp_server_cmd")
-            new_mcp_server_args = st.text_area("Run Arguments", 
-                                            value="", key="new_mcp_server_args",
-                                            placeholder="mcp-server-git --repository path/to/git/repo")
-            new_mcp_server_env = st.text_area("Environment Variables", 
-                                            value="", key="new_mcp_server_env",
-                                            placeholder="Need to provide a valid JSON dictionary")
-
-        submitted = st.form_submit_button("Add", 
-                                          on_click=add_new_mcp_server_handle,
-                                          disabled=False)
+        # Initialize selected_server_id if not present
+        if 'selected_server_id' not in st.session_state:
+            st.session_state.selected_server_id = ""
+        
+        # Initialize confirmation dialog flag if not present
+        if 'show_delete_confirmation' not in st.session_state:
+            st.session_state.show_delete_confirmation = False
+        
+        # Create a form for deletion
+        with st.form("delete_form"):
+            st.write("**Delete MCP Server**")
+            
+            # Add a dropdown to select which server to delete
+            if 'mcp_servers' in st.session_state and st.session_state.mcp_servers:
+                server_to_delete = st.selectbox(
+                    'Select server to delete',
+                    list([server for server in st.session_state.mcp_servers if "Built-in" not in server]),
+                    key="server_to_delete"
+                )
+                
+                # Request confirmation button
+                delete_button = st.form_submit_button(
+                    "Request Deletion", 
+                    on_click=show_delete_confirmation,
+                    disabled=False
+                )
+            else:
+                st.info("No MCP servers available to delete.")
+                st.form_submit_button("Request Deletion", 
+                                     disabled=True
+                                     )
+        
+        # Show confirmation dialog outside the form
+        if st.session_state.get('show_delete_confirmation', False):
+            with st.container():
+                st.warning(f"⚠️ Are you sure you want to delete the server '{st.session_state.server_to_delete}'? This action cannot be undone.")
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("Yes, Delete Server", key="confirm_delete", type="primary", use_container_width=True):
+                        confirm_delete()
+                with col2:
+                    if st.button("Done", key="cancel_delete", use_container_width=True):
+                        cancel_delete()
 
 def on_system_prompt_change():
     if st.session_state.messages[0]["role"] == "system":
@@ -332,40 +649,91 @@ def on_system_prompt_change():
         
 # UI
 with st.sidebar:
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.session_state.user_id = st.text_input('User ID', key='user_id_input',value=st.session_state.user_id,on_change=save_user_id, max_chars=32)
-    with col2:
-        st.button("🔄", on_click=generate_random_user_id, help="Generate random user ID")
+    # Show user information
+    if 'user_info' in st.session_state and st.session_state.user_info:
+        st.write("### User Information")
+        st.write(f"Username: {st.session_state.user_info.get('username', 'Unknown')}")
+        st.write(f"Email: {st.session_state.user_info.get('email', 'Unknown')}")
+        if st.session_state.user_info.get('groups'):
+            st.write(f"Groups: {', '.join(st.session_state.user_info.get('groups', []))}")
+    else:
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.session_state.user_id = st.text_input('User ID', key='user_id_input',value=st.session_state.user_id,on_change=save_user_id, max_chars=32)
+        with col2:
+            st.button("🔄", on_click=generate_random_user_id, help="Generate random user ID")
 
     llm_model_name = st.selectbox('Model List',
                                   list(st.session_state.model_names.keys()))
-    st.session_state.max_tokens = st.number_input('Max output token',
-                                 min_value=1, max_value=64000, value=8000)
-    st.session_state.budget_tokens = st.number_input('Max thinking token',
-                                 min_value=1024, max_value=128000, value=8192,step=1024)
-    st.session_state.temperature = st.number_input('Temperature',
-                                 min_value=0.0, max_value=1.0, value=0.6, step=0.1)
-    st.session_state.only_n_most_recent_images = st.number_input('N most recent images',
-                                 min_value=0, value=1)
-    st.session_state.system_prompt = st.text_area('System',
-                                value=st.session_state.system_prompt,
-                                height=100,
-                                on_change=on_system_prompt_change,
-                                )
-    st.session_state.enable_thinking = st.toggle('Thinking', value=False)
-
-    st.session_state.enable_stream = st.toggle('Stream', value=True)
-    with st.expander(label='Existing MCP Servers', expanded=True):
-        for i, server_name in enumerate(st.session_state.mcp_servers):
-            st.checkbox(label=server_name, value=False, key=f'mcp_server_{server_name}')
-    st.button("Add MCP Server", 
-              on_click=add_new_mcp_server)
+                                  
+    # Hide advanced settings in an expander
+    with st.expander("Model Settings", expanded=False):
+        st.session_state.max_tokens = st.number_input('Max output token',
+                                    min_value=1, max_value=64000, value=8000)
+        st.session_state.budget_tokens = st.number_input('Max thinking token',
+                                    min_value=1024, max_value=128000, value=8192,step=1024)
+        st.session_state.temperature = st.number_input('Temperature',
+                                    min_value=0.0, max_value=1.0, value=0.6, step=0.1)
+                                    
+    with st.expander("Conversation Settings", expanded=False):
+        st.session_state.system_prompt = st.text_area('System prompt',
+                                    value=st.session_state.system_prompt,
+                                    height=100,
+                                    on_change=on_system_prompt_change,
+                                    )
+        st.session_state.only_n_most_recent_images = st.number_input('N most recent images',
+                                    min_value=0, value=1)
+        st.session_state.enable_thinking = st.toggle('Thinking', value=False)
+        st.session_state.enable_stream = st.toggle('Stream', value=True)
     
-    with st.container():
-        st.button("🗑️ Clear Context", on_click=clear_conversation, key="clear_button")
+    st.button("🗑️ Reset chat conversation", on_click=clear_conversation, key="clear_button")
+
+    # MCP Tool Discovery
+    st.sidebar.title("MCP Server Tools")
+
+    st.button("Explore/Add/Delete MCP Servers", 
+              on_click=add_new_mcp_server)
+
+    # Display existing MCP servers with status indicators
+    st.write("### Enable MCP Servers in chat")
+    for i, server_name in enumerate(st.session_state.mcp_servers):
+        st.checkbox(label=server_name, value=False, key=f'mcp_server_{server_name}')
 
 st.title("💬 Bedrock Chatbot with MCP")
+
+# Add pre-filled server suggestion
+st.info("""
+💡 **Tip:** To add MCP servers, use the formats below
+""")
+with st.expander("MCP Servers examples"):
+    st.markdown("##### Remote Server example")
+    st.code("""{
+  "mcpServers": {
+    "your_server_name": {
+      "server_url": "http://your-mcp-server.com/mcp",
+      "http_headers": {"Authorization": "Bearer eyJhbG...AxfQ"}
+    }
+  }
+}""", language="json")
+    
+    st.markdown("##### Local Server example")
+    st.code("""{
+  "mcpServers": {
+    "rijksmuseum-server": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-server-rijksmuseum"
+      ],
+      "env": {
+        "RIJKSMUSEUM_API_KEY": "your_api_key_here"
+      }
+    }
+  }
+}""", language="json")
+
+# Display version information
+st.markdown(f"<div style='position: fixed; right: 10px; bottom: 10px; font-size: 12px; color: gray;'>Version: {commit_id}</div>", unsafe_allow_html=True)
 
 # Display chat messages
 for msg in st.session_state.messages:
@@ -431,13 +799,11 @@ if prompt := st.chat_input():
                         tool_msg = tool_m.group(1)
                         full_response = re.sub(tooluse_regex, "", full_response)
                     if tool_msg:
-                        # with st.expander("Tool Used"):
                         with st.container(border=True):
                             tool_blocks = json.loads(tool_msg)
                             for i,tool_block in enumerate(tool_blocks):
                                 if i%2 == 0:
                                     with st.expander(f"Tool Call:{tool_count}"):
-                                        # st.json(tool_block)
                                         st.code(json.dumps(tool_block, ensure_ascii=False, indent=2), language="json")
                                 else:
                                     with st.expander(f"Tool Result:{tool_count}"):
@@ -495,3 +861,4 @@ if prompt := st.chat_input():
 
     # Add assistant's response to chat history
     st.session_state.messages.append({"role": "assistant", "content": full_response})
+

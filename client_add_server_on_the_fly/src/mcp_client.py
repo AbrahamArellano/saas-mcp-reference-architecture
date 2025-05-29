@@ -49,15 +49,11 @@ class MCPClient:
             'AWS_REGION': region or os.environ.get('AWS_REGION'),
         }
         self.name = name
-        # self.sessions: Dict[str, Optional[ClientSession]] = {}
         self.session = None
         self.exit_stack = AsyncExitStack()
         self._is_http_connection = False
         self.url = None
         self.headers = None
-        # {
-        #     'Authorization': f'Bearer {auth_token}' if auth_token else None,
-        # }
         self.stream_context = None
         self.read_stream = None
         self.write_stream = None
@@ -150,7 +146,9 @@ class MCPClient:
 
     async def connect_to_server(self, server_script_path: str = "", server_script_args: list = [], 
             server_script_envs: Dict = {}, command: str = "", server_url: str = "",
-            http_headers: Dict = None, http_timeout: int = 30, http_sse_timeout: int = 300):
+            http_headers: Dict = None, http_timeout: int = 30, 
+            # http_sse_timeout: int = 300
+            ):
         """Connect to an MCP server
         
         Args:
@@ -170,12 +168,6 @@ class MCPClient:
             self.url=server_url
             self.headers=http_headers
             self.timeout=http_timeout
-            # return await self.connect_via_http(
-            #     url=server_url,
-            #     headers=http_headers,
-            #     timeout=http_timeout,
-            #     sse_read_timeout=http_sse_timeout
-            # )
 
             # async def init(self):
             try:

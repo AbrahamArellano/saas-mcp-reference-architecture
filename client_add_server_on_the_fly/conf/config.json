@@ -9,23 +9,27 @@
 			"model_name": "Amazon Nova Lite v1"
 		},
 		{
-			"model_id": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
-			"model_name": "Claude 3.5 Sonnet v2"
+			"model_id": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+			"model_name": "Claude 4 Sonnet"
 		},
 		{
 			"model_id": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
 			"model_name": "Claude 3.7 Sonnet"
+		},
+		{
+			"model_id": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+			"model_name": "Claude 3.5 Sonnet v2"
 		}
 	],
 	"mcpServers": {
-		"cot": {
+		"Built-in: Chain of Thoughts": {
 			"command": "npx",
 			"args": [
 			  "-y",
 			  "@modelcontextprotocol/server-sequential-thinking"
 			]
 		},
-		"local_fs": {
+		"Built-in: Local filesystem": {
 			"command": "npx",
 			"args": [
 				"-y",
@@ -33,7 +37,7 @@
 				"./docs"
 			],
 			"env": {},
-			"description": "Local File System I/O",
+			"description": "Built-in: Local File System I/O",
 			"status": 1
 		}
 	}
