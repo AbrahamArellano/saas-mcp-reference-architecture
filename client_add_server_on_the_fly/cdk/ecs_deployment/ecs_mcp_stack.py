@@ -11,6 +11,8 @@ from aws_cdk import (
     aws_certificatemanager as acm,
     Stack
 )
+# Import the actions module for Cognito authentication
+from aws_cdk import aws_elasticloadbalancingv2_actions as elbv2_actions
 from constructs import Construct
 import hashlib
 
@@ -67,12 +69,12 @@ class EcsMcpStack(Stack):
             throughput_mode=efs.ThroughputMode.ELASTIC
         )
 
-        # Create ECS Cluster
+        # Create ECS Cluster (updated to use containerInsightsV2 instead of deprecated containerInsights)
         cluster = ecs.Cluster(
             self, "McpCluster",
             vpc=vpc,
             cluster_name=f"mcp-cluster-{suffix}",
-            container_insights=True
+            container_insights_v2=True  # Use the new API instead of deprecated containerInsights
         )
 
         # Create CloudWatch Log Group
@@ -187,17 +189,6 @@ class EcsMcpStack(Stack):
             internet_facing=True,
             security_group=alb_security_group,
             load_balancer_name=f"mcp-alb-{suffix}"
-        )
-
-        # 4. CREATE SSL CERTIFICATE
-        # Note: For PoC, we'll use a self-signed certificate approach
-        # In production, you'd want to use a proper domain with Route53
-        certificate = acm.Certificate(
-            self, "McpCertificate",
-            domain_name=alb.load_balancer_dns_name,
-            validation=acm.CertificateValidation.from_dns(),
-            # Note: This will create a certificate but DNS validation won't work 
-            # without a proper domain. For PoC, you might want to use HTTP instead
         )
 
         # 5. CREATE COGNITO APP CLIENT (after ALB exists)
@@ -382,12 +373,12 @@ class EcsMcpStack(Stack):
         # Add ECS service to target group
         target_group.add_target(service)
 
-        # For PoC: Create HTTP listener with Cognito auth (since SSL cert might not validate immediately)
+        # For PoC: Create HTTP listener with Cognito auth (FIXED VERSION)
         http_listener = alb.add_listener(
             "HttpListener",
             port=80,
             protocol=elbv2.ApplicationProtocol.HTTP,
-            default_action=elbv2.ListenerAction.authenticate_cognito(
+            default_action=elbv2_actions.AuthenticateCognitoAction(
                 user_pool=user_pool,
                 user_pool_client=app_client,
                 user_pool_domain=cognito_domain,
@@ -395,35 +386,6 @@ class EcsMcpStack(Stack):
                 next_action=elbv2.ListenerAction.forward([target_group])
             )
         )
-
-        # 7. CREATE HTTPS LISTENER WITH COGNITO AUTH (if you have a valid domain)
-        # Uncomment this section if you have a proper domain and valid SSL certificate
-        """
-        https_listener = alb.add_listener(
-            "HttpsListener",
-            port=443,
-            protocol=elbv2.ApplicationProtocol.HTTPS,
-            certificates=[certificate],
-            default_action=elbv2.ListenerAction.authenticate_cognito(
-                user_pool=user_pool,
-                user_pool_client=app_client,
-                user_pool_domain=cognito_domain,
-                scope="openid email profile",
-                next_action=elbv2.ListenerAction.forward([target_group])
-            )
-        )
-
-        # HTTP redirect to HTTPS
-        alb.add_listener(
-            "HttpRedirectListener", 
-            port=80,
-            default_action=elbv2.ListenerAction.redirect(
-                protocol="HTTPS",
-                port="443",
-                permanent=True
-            )
-        )
-        """
 
         # Create a test user (Optional - for PoC testing)
         test_user = cognito.CfnUserPoolUser(
@@ -449,12 +411,6 @@ class EcsMcpStack(Stack):
             self, "LoadBalancerUrl",
             value=f"http://{alb.load_balancer_dns_name}",
             description="HTTP URL to access the MCP Application (with Cognito Auth)"
-        )
-
-        cdk.CfnOutput(
-            self, "SecureApplicationUrl", 
-            value=f"https://{alb.load_balancer_dns_name}",
-            description="HTTPS URL (may require valid SSL cert setup)"
         )
 
         cdk.CfnOutput(
