@@ -8,13 +8,14 @@ from aws_cdk import (
     aws_logs as logs,
     aws_efs as efs,
     aws_cognito as cognito,
-    aws_certificatemanager as acm,
+    aws_cloudfront as cloudfront,
+    aws_cloudfront_origins as origins,
+    aws_secretsmanager as secretsmanager,
     Stack
 )
-# Import the actions module for Cognito authentication
-from aws_cdk import aws_elasticloadbalancingv2_actions as elbv2_actions
 from constructs import Construct
 import hashlib
+import json
 
 
 class EcsMcpStack(Stack):
@@ -69,12 +70,12 @@ class EcsMcpStack(Stack):
             throughput_mode=efs.ThroughputMode.ELASTIC
         )
 
-        # Create ECS Cluster (updated to use containerInsightsV2 instead of deprecated containerInsights)
+        # Create ECS Cluster
         cluster = ecs.Cluster(
             self, "McpCluster",
             vpc=vpc,
             cluster_name=f"mcp-cluster-{suffix}",
-            container_insights_v2=True  # Use the new API instead of deprecated containerInsights
+            container_insights=True
         )
 
         # Create CloudWatch Log Group
@@ -94,6 +95,17 @@ class EcsMcpStack(Stack):
                     "service-role/AmazonECSTaskExecutionRolePolicy"
                 )
             ]
+        )
+
+        # Add Secrets Manager permissions to task execution role
+        task_execution_role.add_to_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=[
+                    "secretsmanager:GetSecretValue"
+                ],
+                resources=[f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:mcp-cognito-*"]
+            )
         )
 
         # Create IAM Task Role with Bedrock permissions
@@ -140,17 +152,15 @@ class EcsMcpStack(Stack):
                 require_lowercase=True,
                 require_uppercase=True,
                 require_digits=True,
-                require_symbols=False  # Optional for easier PoC testing
+                require_symbols=False
             ),
-            # Standard attributes
             standard_attributes=cognito.StandardAttributes(
                 email=cognito.StandardAttribute(required=True, mutable=True),
                 given_name=cognito.StandardAttribute(required=False, mutable=True),
                 family_name=cognito.StandardAttribute(required=False, mutable=True)
             ),
-            # Account recovery
             account_recovery=cognito.AccountRecovery.EMAIL_ONLY,
-            removal_policy=cdk.RemovalPolicy.DESTROY  # PoC only
+            removal_policy=cdk.RemovalPolicy.DESTROY
         )
 
         # 2. CREATE COGNITO DOMAIN  
@@ -158,7 +168,7 @@ class EcsMcpStack(Stack):
             self, "McpCognitoDomain",
             user_pool=user_pool,
             cognito_domain=cognito.CognitoDomainOptions(
-                domain_prefix=f"mcp-auth-{suffix}"  # Globally unique
+                domain_prefix=f"mcp-auth-{suffix}"
             )
         )
 
@@ -170,16 +180,11 @@ class EcsMcpStack(Stack):
             allow_all_outbound=True
         )
 
-        # Allow HTTP and HTTPS access from anywhere
+        # Allow HTTP access from anywhere
         alb_security_group.add_ingress_rule(
             peer=ec2.Peer.any_ipv4(),
             connection=ec2.Port.tcp(80),
             description="Allow HTTP from anywhere"
-        )
-        alb_security_group.add_ingress_rule(
-            peer=ec2.Peer.any_ipv4(),
-            connection=ec2.Port.tcp(443),
-            description="Allow HTTPS from anywhere"
         )
 
         # 3. CREATE APPLICATION LOAD BALANCER
@@ -191,21 +196,33 @@ class EcsMcpStack(Stack):
             load_balancer_name=f"mcp-alb-{suffix}"
         )
 
-        # 5. CREATE COGNITO APP CLIENT (after ALB exists)
+        # 4. ADD CLOUDFRONT DISTRIBUTION (provides free SSL)
+        distribution = cloudfront.Distribution(
+            self, "McpDistribution",
+            default_behavior=cloudfront.BehaviorOptions(
+                origin=origins.LoadBalancerV2Origin(
+                    alb,
+                    protocol_policy=cloudfront.OriginProtocolPolicy.HTTP_ONLY  # ADD THIS LINE
+                ),
+                viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS
+            )
+        )
+
+        # 5. CREATE COGNITO APP CLIENT (using AUTHORIZATION CODE FLOW)
         app_client = cognito.UserPoolClient(
             self, "McpAppClient",
             user_pool=user_pool,
             user_pool_client_name=f"mcp-app-client-{suffix}",
-            generate_secret=True,  # Required for ALB integration
+            generate_secret=True,  # Required for authorization code flow
             auth_flows=cognito.AuthFlow(
                 user_password=True,
                 user_srp=True,
-                admin_user_password=True  # For admin operations
+                admin_user_password=True
             ),
             o_auth=cognito.OAuthSettings(
                 flows=cognito.OAuthFlows(
-                    authorization_code_grant=True,
-                    implicit_code_grant=False  # More secure
+                    authorization_code_grant=True,   # Enable authorization code flow
+                    implicit_code_grant=False       # Disable implicit flow
                 ),
                 scopes=[
                     cognito.OAuthScope.EMAIL,
@@ -213,18 +230,31 @@ class EcsMcpStack(Stack):
                     cognito.OAuthScope.PROFILE
                 ],
                 callback_urls=[
-                    f"https://{alb.load_balancer_dns_name}/oauth2/idpresponse",
-                    f"http://{alb.load_balancer_dns_name}/oauth2/idpresponse"  # For testing
+                    f"https://{distribution.distribution_domain_name}/"  # Root URL
                 ],
                 logout_urls=[
-                    f"https://{alb.load_balancer_dns_name}/",
-                    f"http://{alb.load_balancer_dns_name}/"
+                    f"https://{distribution.distribution_domain_name}/"
                 ]
             ),
-            # Session configuration
             access_token_validity=cdk.Duration.hours(1),
             id_token_validity=cdk.Duration.hours(1),
             refresh_token_validity=cdk.Duration.days(30)
+        )
+
+        # 6. CREATE SECRETS MANAGER SECRET FOR COGNITO CLIENT SECRET
+        cognito_secret = secretsmanager.Secret(
+            self, "CognitoClientSecret",
+            secret_name=f"mcp-cognito-{suffix}",
+            description="Cognito App Client Secret and Configuration",
+            generate_secret_string=secretsmanager.SecretStringGenerator(
+                secret_string_template=json.dumps({
+                    "user_pool_id": user_pool.user_pool_id,
+                    "client_id": app_client.user_pool_client_id,
+                    "domain": f"{cognito_domain.domain_name}.auth.{self.region}.amazoncognito.com"
+                }),
+                generate_string_key="client_secret",
+                exclude_characters=" %+~`#$&*()|[]{}:;<>?!'\"/\\"
+            )
         )
 
         # Create EFS Volume Configuration
@@ -275,6 +305,9 @@ class EcsMcpStack(Stack):
                 "COGNITO_REGION": self.region,
                 "COGNITO_USER_POOL_ID": user_pool.user_pool_id,
                 "COGNITO_APP_CLIENT_ID": app_client.user_pool_client_id,
+                "COGNITO_DOMAIN": f"{cognito_domain.domain_name}.auth.{self.region}.amazoncognito.com",
+                "COGNITO_REDIRECT_URI": f"https://{distribution.distribution_domain_name}/",
+                "COGNITO_SECRET_NAME": cognito_secret.secret_name
             },
             health_check=ecs.HealthCheck(
                 command=["CMD-SHELL", "curl -f http://localhost:8502/_stcore/health || exit 1"],
@@ -359,7 +392,7 @@ class EcsMcpStack(Stack):
             target_type=elbv2.TargetType.IP,
             health_check=elbv2.HealthCheck(
                 enabled=True,
-                path="/_stcore/health",  # Streamlit health check endpoint
+                path="/_stcore/health",
                 protocol=elbv2.Protocol.HTTP,
                 port="8502",
                 healthy_http_codes="200",
@@ -373,44 +406,19 @@ class EcsMcpStack(Stack):
         # Add ECS service to target group
         target_group.add_target(service)
 
-        # For PoC: Create HTTP listener with Cognito auth (FIXED VERSION)
+        # Create HTTP listener - Direct forwarding (no authentication at ALB)
         http_listener = alb.add_listener(
             "HttpListener",
             port=80,
             protocol=elbv2.ApplicationProtocol.HTTP,
-            default_action=elbv2_actions.AuthenticateCognitoAction(
-                user_pool=user_pool,
-                user_pool_client=app_client,
-                user_pool_domain=cognito_domain,
-                scope="openid email profile",
-                next_action=elbv2.ListenerAction.forward([target_group])
-            )
-        )
-
-        # Create a test user (Optional - for PoC testing)
-        test_user = cognito.CfnUserPoolUser(
-            self, "TestUser",
-            user_pool_id=user_pool.user_pool_id,
-            username="testuser",
-            user_attributes=[
-                cognito.CfnUserPoolUser.AttributeTypeProperty(
-                    name="email",
-                    value="test@example.com"
-                ),
-                cognito.CfnUserPoolUser.AttributeTypeProperty(
-                    name="email_verified", 
-                    value="true"
-                )
-            ],
-            temporary_password="TempPass123!",
-            message_action="SUPPRESS"  # Don't send welcome email for PoC
+            default_action=elbv2.ListenerAction.forward([target_group])
         )
 
         # Outputs
         cdk.CfnOutput(
             self, "LoadBalancerUrl",
-            value=f"http://{alb.load_balancer_dns_name}",
-            description="HTTP URL to access the MCP Application (with Cognito Auth)"
+            value=f"https://{distribution.distribution_domain_name}",
+            description="HTTPS URL to access the MCP Application (Cognito auth handled by app)"
         )
 
         cdk.CfnOutput(
@@ -427,14 +435,14 @@ class EcsMcpStack(Stack):
 
         cdk.CfnOutput(
             self, "CognitoLoginUrl",
-            value=f"https://{cognito_domain.domain_name}.auth.{self.region}.amazoncognito.com/login?client_id={app_client.user_pool_client_id}&response_type=code&scope=email+openid+profile&redirect_uri=http://{alb.load_balancer_dns_name}/oauth2/idpresponse",
-            description="Direct Cognito Login URL"
+            value=f"https://{cognito_domain.domain_name}.auth.{self.region}.amazoncognito.com/login?client_id={app_client.user_pool_client_id}&response_type=code&scope=email+openid+profile&redirect_uri=https://{distribution.distribution_domain_name}/",
+            description="Cognito Hosted UI Login URL (Authorization Code Flow)"
         )
 
         cdk.CfnOutput(
-            self, "TestUserCredentials",
-            value="Username: testuser, Initial Password: TempPass123! (you'll be prompted to change)",
-            description="Test user credentials for PoC"
+            self, "TestUserInstructions",
+            value="Visit CognitoLoginUrl and click 'Sign up' to create an account",
+            description="How to access the application"
         )
 
         cdk.CfnOutput(
@@ -453,4 +461,22 @@ class EcsMcpStack(Stack):
             self, "EcsServiceName",
             value=service.service_name,
             description="ECS Service Name"
+        )
+
+        cdk.CfnOutput(
+            self, "CloudFrontDistributionId",
+            value=distribution.distribution_id,
+            description="CloudFront Distribution ID"
+        )
+
+        cdk.CfnOutput(
+            self, "CloudFrontDomainName",
+            value=distribution.distribution_domain_name,
+            description="CloudFront Domain Name"
+        )
+
+        cdk.CfnOutput(
+            self, "CognitoSecretName",
+            value=cognito_secret.secret_name,
+            description="Secrets Manager secret containing Cognito client secret"
         )

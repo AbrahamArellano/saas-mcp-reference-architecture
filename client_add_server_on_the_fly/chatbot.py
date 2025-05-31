@@ -17,6 +17,9 @@ from streamlit_local_storage import LocalStorage
 import copy
 import subprocess
 from dotenv import load_dotenv
+from urllib.parse import urlencode, parse_qs, urlparse
+import boto3
+
 load_dotenv() # load env vars from .env
 API_KEY = os.environ.get("API_KEY")
 
@@ -46,14 +49,163 @@ try:
 except Exception:
     commit_id = 'unknown'
 
-# Cognito authentication handling
-def get_cognito_token_from_url():
-    """Extract Cognito token from URL parameters (for redirect flow)"""
+# NEW FUNCTION: Get Cognito client secret from Secrets Manager
+def get_cognito_client_secret():
+    """Get Cognito client secret from AWS Secrets Manager"""
+    try:
+        secret_name = os.environ.get('COGNITO_SECRET_NAME')
+        if not secret_name:
+            return None
+            
+        session = boto3.Session()
+        client = session.client(
+            service_name='secretsmanager',
+            region_name=os.environ.get('AWS_REGION', 'us-east-1')
+        )
+        
+        response = client.get_secret_value(SecretId=secret_name)
+        secret = json.loads(response['SecretString'])
+        return secret.get('client_secret')
+    except Exception as e:
+        logging.error(f"Failed to get Cognito client secret: {e}")
+        return None
+
+# NEW FUNCTION: Exchange authorization code for tokens
+def exchange_authorization_code_for_tokens(auth_code, redirect_uri):
+    """Exchange authorization code for access and ID tokens"""
+    try:
+        # Get Cognito configuration from environment
+        cognito_domain = os.environ.get('COGNITO_DOMAIN')
+        client_id = os.environ.get('COGNITO_APP_CLIENT_ID')
+        client_secret = get_cognito_client_secret()
+        
+        if not all([cognito_domain, client_id, client_secret, auth_code]):
+            logging.error("Missing Cognito configuration for token exchange")
+            return None
+        
+        # Prepare token exchange request
+        token_url = f"https://{cognito_domain}/oauth2/token"
+        
+        # Prepare authentication header
+        auth_string = f"{client_id}:{client_secret}"
+        auth_bytes = auth_string.encode('ascii')
+        auth_b64 = base64.b64encode(auth_bytes).decode('ascii')
+        
+        headers = {
+            'Authorization': f'Basic {auth_b64}',
+            'Content-Type': 'application/x-www-form-urlencoded'
+        }
+        
+        data = {
+            'grant_type': 'authorization_code',
+            'client_id': client_id,
+            'code': auth_code,
+            'redirect_uri': redirect_uri
+        }
+        
+        # Make token exchange request
+        response = requests.post(token_url, headers=headers, data=data, timeout=10)
+        
+        if response.status_code == 200:
+            token_data = response.json()
+            logging.info("Successfully exchanged authorization code for tokens")
+            return {
+                'access_token': token_data.get('access_token'),
+                'id_token': token_data.get('id_token'),
+                'refresh_token': token_data.get('refresh_token'),
+                'expires_in': token_data.get('expires_in')
+            }
+        else:
+            logging.error(f"Token exchange failed: {response.status_code} - {response.text}")
+            return None
+            
+    except Exception as e:
+        logging.error(f"Error exchanging authorization code: {e}")
+        return None
+
+# NEW FUNCTION: Handle authorization code flow
+def get_cognito_token_from_url_with_auth_code():
+    """Extract and handle Cognito tokens or authorization code from URL"""
     query_params = st.query_params
-    if 'id_token' in query_params:
-        # logging.info(f"Cognito id_token: {query_params['id_token']}")
+    
+    # Check for authorization code (authorization code flow)
+    if 'code' in query_params:
+        auth_code = query_params['code']
+        redirect_uri = os.environ.get('COGNITO_REDIRECT_URI', st.session_state.get('current_url', ''))
+        
+        logging.info(f"Found authorization code, exchanging for tokens")
+        
+        # Exchange code for tokens
+        tokens = exchange_authorization_code_for_tokens(auth_code, redirect_uri)
+        
+        if tokens and tokens.get('id_token'):
+            # Store tokens in session state
+            st.session_state.cognito_tokens = tokens
+            
+            # Clean up URL by removing the code parameter
+            clean_url = remove_query_params_from_url(['code', 'state'])
+            if clean_url != dict(st.query_params):
+                st.query_params.clear()
+                for key, value in clean_url.items():
+                    st.query_params[key] = value
+                st.rerun()
+            
+            return tokens['id_token']
+    
+    # Check for direct ID token (fallback for implicit flow)
+    elif 'id_token' in query_params:
+        logging.info("Found ID token in URL parameters")
         return query_params['id_token']
+    
+    # Check for tokens in session state
+    elif 'cognito_tokens' in st.session_state:
+        tokens = st.session_state.cognito_tokens
+        if tokens and tokens.get('id_token'):
+            return tokens['id_token']
+    
     return None
+
+# NEW FUNCTION: Remove query parameters from URL
+def remove_query_params_from_url(params_to_remove):
+    """Remove specific query parameters from current URL"""
+    try:
+        current_params = dict(st.query_params)
+        for param in params_to_remove:
+            current_params.pop(param, None)
+        return current_params
+    except Exception as e:
+        logging.error(f"Error cleaning URL parameters: {e}")
+        return {}
+
+# NEW FUNCTION: Build Cognito login URL
+def get_cognito_login_url():
+    """Build Cognito login URL with current page as redirect"""
+    try:
+        cognito_domain = os.environ.get('COGNITO_DOMAIN')
+        client_id = os.environ.get('COGNITO_APP_CLIENT_ID')
+        redirect_uri = os.environ.get('COGNITO_REDIRECT_URI')
+        
+        if not all([cognito_domain, client_id, redirect_uri]):
+            return None
+        
+        params = {
+            'client_id': client_id,
+            'response_type': 'code',
+            'scope': 'email openid profile',
+            'redirect_uri': redirect_uri
+        }
+        
+        login_url = f"https://{cognito_domain}/login?" + urlencode(params)
+        return login_url
+        
+    except Exception as e:
+        logging.error(f"Error building Cognito login URL: {e}")
+        return None
+
+# Cognito authentication handling (legacy functions for backward compatibility)
+def get_cognito_token_from_url():
+    """Extract Cognito token from URL parameters (legacy method)"""
+    return get_cognito_token_from_url_with_auth_code()
 
 def get_cognito_token_from_headers():
     """Extract Cognito token from ALB headers using st.context.header"""
@@ -72,40 +224,61 @@ def get_cognito_token_from_headers():
     
     return None
 
-# User session management
+# FIXED FUNCTION: User session management - redirect BEFORE any MCP backend calls
 def initialize_user_session():
-    """Initialize user session, ensuring each user has a unique identifier"""    
+    """Initialize user session with Cognito authentication and auto-redirect"""
+    
+    # Store current URL for redirect purposes
+    if 'current_url' not in st.session_state:
+        st.session_state.current_url = os.environ.get('COGNITO_REDIRECT_URI', 'https://localhost:8502/')
+    
+    # Check for authorization code or existing tokens FIRST
+    query_params = st.query_params
+    
     # First check for existing token in session state
     if 'cognito_token' in st.session_state:
         cognito_token = st.session_state.cognito_token
     else:
-        # Try to get token from URL or headers
-        cognito_token = get_cognito_token_from_url() or get_cognito_token_from_headers()
+        # Try to get token from URL, headers, or authorization code
+        cognito_token = get_cognito_token_from_url_with_auth_code() or get_cognito_token_from_headers()
         
         # Store the token in session state if found
         if cognito_token:
             st.session_state.cognito_token = cognito_token
     
-    # If we have a token, try to authenticate with it
+    # PRIORITY: If no authentication found, redirect to Cognito login IMMEDIATELY
+    if not cognito_token and 'code' not in query_params and 'id_token' not in query_params:
+        # No authentication found, redirect to Cognito login
+        login_url = get_cognito_login_url()
+        if login_url:
+            st.warning("🔐 Authentication required. Redirecting to login...")
+            st.markdown(f'<meta http-equiv="refresh" content="2;url={login_url}">', unsafe_allow_html=True)
+            st.markdown(f"If you're not redirected automatically, [click here to login]({login_url})")
+            st.stop()
+    
+    # If we have a token, try to authenticate with it (ONLY if token exists)
     if cognito_token:
-        # Try to get user info from backend
         try:
             response = requests.get(
                 f"{mcp_base_url.rstrip('/')}/v1/user/info",
-                headers={'Authorization': f'Bearer {cognito_token}'}
+                headers={'Authorization': f'Bearer {cognito_token}'},
+                timeout=5
             )
             if response.status_code == 200:
                 user_info = response.json()
                 st.session_state.user_id = user_info.get('user_id')
                 st.session_state.user_info = user_info
-                local_storage.setItem(COOKIE_NAME, st.session_state.user_id)
+                if local_storage:
+                    local_storage.setItem(COOKIE_NAME, st.session_state.user_id)
                 logging.info(f"Authenticated with Cognito: {st.session_state.user_id}")
                 return
         except Exception as e:
-            logging.error(f"Failed to get user info from Cognito token: {e}")
+            logging.error(f"Failed to authenticate with Cognito token: {e}")
             # Clear invalid token
             if 'cognito_token' in st.session_state:
                 del st.session_state.cognito_token
+            if 'cognito_tokens' in st.session_state:
+                del st.session_state.cognito_tokens
     
     # If no Cognito token or authentication failed, fall back to local user ID
     if "user_id" not in st.session_state:
@@ -117,26 +290,66 @@ def initialize_user_session():
             # Generate new user ID
             st.session_state.user_id = str(uuid.uuid4())[:8]
             # Save to LocalStorage
-            local_storage.setItem(COOKIE_NAME, st.session_state.user_id)
-    
+            if local_storage:
+                local_storage.setItem(COOKIE_NAME, st.session_state.user_id)
+
 # Function to generate random user ID
 def generate_random_user_id():
     st.session_state.user_id = str(uuid.uuid4())[:8]
     # Update cookie
-    local_storage.setItem(COOKIE_NAME, st.session_state.user_id)
+    if local_storage:
+        local_storage.setItem(COOKIE_NAME, st.session_state.user_id)
     logging.info(f"Generated new random user ID: {st.session_state.user_id}")
     
 # Save to cookie when user manually changes ID
 def save_user_id():
     st.session_state.user_id = st.session_state.user_id_input
-    local_storage.setItem(COOKIE_NAME, st.session_state.user_id)
+    if local_storage:
+        local_storage.setItem(COOKIE_NAME, st.session_state.user_id)
     logging.info(f"Saved user ID: {st.session_state.user_id}")
 
+# NEW FUNCTION: Logout functionality
+def logout_user():
+    """Logout user and clear authentication state"""
+    # Clear Cognito tokens from session
+    for key in ['cognito_token', 'cognito_tokens', 'user_info', 'user_id']:
+        if key in st.session_state:
+            del st.session_state[key]
+    
+    # Clear local storage
+    if local_storage:
+        local_storage.removeItem(COOKIE_NAME)
+    
+    # Build logout URL
+    cognito_domain = os.environ.get('COGNITO_DOMAIN')
+    client_id = os.environ.get('COGNITO_APP_CLIENT_ID')
+    redirect_uri = os.environ.get('COGNITO_REDIRECT_URI')
+    
+    if cognito_domain and client_id and redirect_uri:
+        logout_url = f"https://{cognito_domain}/logout?" + urlencode({
+            'client_id': client_id,
+            'logout_uri': redirect_uri
+        })
+        st.query_params.clear()
+        st.markdown(f'<meta http-equiv="refresh" content="1;url={logout_url}">', unsafe_allow_html=True)
+    
+    st.rerun()
+
+# CALL AUTHENTICATION FIRST - BEFORE ANY MCP BACKEND CALLS
 initialize_user_session()
     
+# MODIFIED FUNCTION: Build authentication headers with token refresh handling
 def get_auth_headers():
-    """Build authentication headers containing user identity"""
-    # If we have a Cognito token, use it for authentication
+    """Build authentication headers with token refresh handling"""
+    # If we have Cognito tokens, use them
+    if 'cognito_tokens' in st.session_state:
+        tokens = st.session_state.cognito_tokens
+        if tokens and tokens.get('id_token'):
+            return {
+                'Authorization': f'Bearer {tokens["id_token"]}'
+            }
+    
+    # Fallback to stored cognito_token
     if 'cognito_token' in st.session_state:
         return {
             'Authorization': f'Bearer {st.session_state.cognito_token}'
@@ -145,7 +358,7 @@ def get_auth_headers():
     # Otherwise fall back to API key with X-User-ID
     headers = {
         'Authorization': f'Bearer {API_KEY}',
-        'X-User-ID': st.session_state.user_id  # Add user ID header
+        'X-User-ID': st.session_state.get('user_id', 'anonymous')
     }
     return headers
 
@@ -153,7 +366,7 @@ def request_list_models():
     url = mcp_base_url.rstrip('/') + '/v1/list/models'
     models = []
     try:
-        response = requests.get(url, headers=get_auth_headers())
+        response = requests.get(url, headers=get_auth_headers(), timeout=10)
         data = response.json()
         models = data.get('models', [])
     except Exception as e:
@@ -164,7 +377,7 @@ def request_list_mcp_servers():
     url = mcp_base_url.rstrip('/') + '/v1/list/mcp_server'
     mcp_servers = []
     try:
-        response = requests.get(url, headers=get_auth_headers())
+        response = requests.get(url, headers=get_auth_headers(), timeout=10)
         data = response.json()
         mcp_servers = data.get('servers', [])
     except Exception as e:
@@ -175,7 +388,7 @@ def request_list_mcp_server_config(mcp_server_id: str):
     url = mcp_base_url.rstrip('/') + '/v1/list/mcp_server_config/' + mcp_server_id
     server_config = {}
     try:
-        response = requests.get(url, headers=get_auth_headers())
+        response = requests.get(url, headers=get_auth_headers(), timeout=10)
         data = response.json()
         server_config = data.get('server_config', [])
     except Exception as e:
@@ -186,7 +399,7 @@ def request_list_mcp_server_tools(mcp_server_id: str):
     url = mcp_base_url.rstrip('/') + '/v1/list/mcp_server_tools/' + mcp_server_id
     tools_config = {}
     try:
-        response = requests.get(url, headers=get_auth_headers())
+        response = requests.get(url, headers=get_auth_headers(), timeout=10)
         data = response.json()
         tools_config = data.get('tools_config', [])
         logging.info(f'Server ID: {mcp_server_id}, tools_config: {tools_config}')
@@ -207,7 +420,7 @@ def request_add_mcp_server(server_id, server_name, command, args=[], env=None, c
         }
         if env:
             payload["env"] = env
-        response = requests.post(url, json=payload, headers=get_auth_headers())
+        response = requests.post(url, json=payload, headers=get_auth_headers(), timeout=10)
         data = response.json()
         status = data['errno'] == 0
         msg = data['msg']
@@ -229,7 +442,7 @@ def request_delete_mcp_server(server_id):
     url = mcp_base_url.rstrip('/') + f'/v1/remove/mcp_server/{server_id}'
     status = False
     try:
-        response = requests.delete(url, headers=get_auth_headers())
+        response = requests.delete(url, headers=get_auth_headers(), timeout=10)
         data = response.json()
         status = data['errno'] == 0
         msg = data['msg']
@@ -283,7 +496,7 @@ def request_chat(messages, model_id, mcp_server_ids, stream=False, max_tokens=10
             # Streaming request
             headers = get_auth_headers()
             headers['Accept'] = 'text/event-stream'  
-            response = requests.post(url, json=payload, stream=True, headers=headers)
+            response = requests.post(url, json=payload, stream=True, headers=headers, timeout=30)
             
             if response.status_code == 200:
                 return response, {}
@@ -292,7 +505,7 @@ def request_chat(messages, model_id, mcp_server_ids, stream=False, max_tokens=10
                 logging.error(f'User {st.session_state.user_id} chat request error: %d' % response.status_code)
         else:
             # Regular request
-            response = requests.post(url, json=payload, headers=get_auth_headers())
+            response = requests.post(url, json=payload, headers=get_auth_headers(), timeout=30)
             data = response.json()
             msg = data['choices'][0]['message']['content']
             msg_extras = data['choices'][0]['message_extras']
@@ -304,16 +517,26 @@ def request_chat(messages, model_id, mcp_server_ids, stream=False, max_tokens=10
     logging.info(f'User {st.session_state.user_id} response message: %s' % msg)
     return msg, msg_extras
 
-# Initialize session state
-if not 'model_names' in st.session_state:
-    st.session_state.model_names = {}
-    for x in request_list_models():
-        st.session_state.model_names[x['model_name']] = x['model_id']
+# MOVED AFTER AUTHENTICATION: Initialize session state with error handling
+try:
+    if not 'model_names' in st.session_state:
+        st.session_state.model_names = {}
+        models = request_list_models()  # Now called AFTER authentication
+        for x in models:
+            st.session_state.model_names[x['model_name']] = x['model_id']
+except Exception as e:
+    logging.error(f"Failed to load models: {e}")
+    st.session_state.model_names = {"Amazon Nova Lite v1": "us.amazon.nova-lite-v1:0"}  # Fallback
 
-if not 'mcp_servers' in st.session_state:
-    st.session_state.mcp_servers = {}
-    for x in request_list_mcp_servers():
-        st.session_state.mcp_servers[x['server_name']] = x['server_id']
+try:
+    if not 'mcp_servers' in st.session_state:
+        st.session_state.mcp_servers = {}
+        servers = request_list_mcp_servers()  # Now called AFTER authentication
+        for x in servers:
+            st.session_state.mcp_servers[x['server_name']] = x['server_id']
+except Exception as e:
+    logging.error(f"Failed to load MCP servers: {e}")
+    st.session_state.mcp_servers = {}  # Fallback
 
 if "system_prompt" not in st.session_state:
     st.session_state.system_prompt = "You are a helpful assistant"
@@ -656,6 +879,10 @@ with st.sidebar:
         st.write(f"Email: {st.session_state.user_info.get('email', 'Unknown')}")
         if st.session_state.user_info.get('groups'):
             st.write(f"Groups: {', '.join(st.session_state.user_info.get('groups', []))}")
+        
+        # Add logout button for authenticated users
+        if st.button("🔓 Logout"):
+            logout_user()
     else:
         col1, col2 = st.columns([3, 1])
         with col1:
@@ -861,4 +1088,3 @@ if prompt := st.chat_input():
 
     # Add assistant's response to chat history
     st.session_state.messages.append({"role": "assistant", "content": full_response})
-
