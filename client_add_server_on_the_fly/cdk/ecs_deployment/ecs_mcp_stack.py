@@ -141,12 +141,13 @@ class EcsMcpStack(Stack):
             }
         )
 
-        # 1. CREATE COGNITO USER POOL
+        # CREATE COGNITO USER POOL
         user_pool = cognito.UserPool(
             self, "McpUserPool",
             user_pool_name=f"mcp-users-{suffix}",
             sign_in_aliases=cognito.SignInAliases(email=True),
             auto_verify=cognito.AutoVerifiedAttrs(email=True),
+            self_sign_up_enabled=True,
             password_policy=cognito.PasswordPolicy(
                 min_length=8,
                 require_lowercase=True,
@@ -163,7 +164,7 @@ class EcsMcpStack(Stack):
             removal_policy=cdk.RemovalPolicy.DESTROY
         )
 
-        # 2. CREATE COGNITO DOMAIN  
+        # CREATE COGNITO DOMAIN  
         cognito_domain = cognito.UserPoolDomain(
             self, "McpCognitoDomain",
             user_pool=user_pool,
@@ -187,74 +188,13 @@ class EcsMcpStack(Stack):
             description="Allow HTTP from anywhere"
         )
 
-        # 3. CREATE APPLICATION LOAD BALANCER
+        # CREATE APPLICATION LOAD BALANCER
         alb = elbv2.ApplicationLoadBalancer(
             self, "McpLoadBalancer",
             vpc=vpc,
             internet_facing=True,
             security_group=alb_security_group,
             load_balancer_name=f"mcp-alb-{suffix}"
-        )
-
-        # 4. ADD CLOUDFRONT DISTRIBUTION (provides free SSL)
-        distribution = cloudfront.Distribution(
-            self, "McpDistribution",
-            default_behavior=cloudfront.BehaviorOptions(
-                origin=origins.LoadBalancerV2Origin(
-                    alb,
-                    protocol_policy=cloudfront.OriginProtocolPolicy.HTTP_ONLY  # ADD THIS LINE
-                ),
-                viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS
-            )
-        )
-
-        # 5. CREATE COGNITO APP CLIENT (using AUTHORIZATION CODE FLOW)
-        app_client = cognito.UserPoolClient(
-            self, "McpAppClient",
-            user_pool=user_pool,
-            user_pool_client_name=f"mcp-app-client-{suffix}",
-            generate_secret=True,  # Required for authorization code flow
-            auth_flows=cognito.AuthFlow(
-                user_password=True,
-                user_srp=True,
-                admin_user_password=True
-            ),
-            o_auth=cognito.OAuthSettings(
-                flows=cognito.OAuthFlows(
-                    authorization_code_grant=True,   # Enable authorization code flow
-                    implicit_code_grant=False       # Disable implicit flow
-                ),
-                scopes=[
-                    cognito.OAuthScope.EMAIL,
-                    cognito.OAuthScope.OPENID,
-                    cognito.OAuthScope.PROFILE
-                ],
-                callback_urls=[
-                    f"https://{distribution.distribution_domain_name}/"  # Root URL
-                ],
-                logout_urls=[
-                    f"https://{distribution.distribution_domain_name}/"
-                ]
-            ),
-            access_token_validity=cdk.Duration.hours(1),
-            id_token_validity=cdk.Duration.hours(1),
-            refresh_token_validity=cdk.Duration.days(30)
-        )
-
-        # 6. CREATE SECRETS MANAGER SECRET FOR COGNITO CLIENT SECRET
-        cognito_secret = secretsmanager.Secret(
-            self, "CognitoClientSecret",
-            secret_name=f"mcp-cognito-{suffix}",
-            description="Cognito App Client Secret and Configuration",
-            generate_secret_string=secretsmanager.SecretStringGenerator(
-                secret_string_template=json.dumps({
-                    "user_pool_id": user_pool.user_pool_id,
-                    "client_id": app_client.user_pool_client_id,
-                    "domain": f"{cognito_domain.domain_name}.auth.{self.region}.amazoncognito.com"
-                }),
-                generate_string_key="client_secret",
-                exclude_characters=" %+~`#$&*()|[]{}:;<>?!'\"/\\"
-            )
         )
 
         # Create EFS Volume Configuration
@@ -282,7 +222,7 @@ class EcsMcpStack(Stack):
             ]
         )
 
-        # Add container to task definition with Cognito environment variables
+        # FIXED: Add container to task definition BEFORE creating ECS service
         container = task_definition.add_container(
             "McpContainer",
             container_name="mcp-app",
@@ -301,13 +241,9 @@ class EcsMcpStack(Stack):
                 "MCP_BASE_URL": "http://127.0.0.1:7002",
                 "API_KEY": "mcp-demo-key",
                 "MAX_TURNS": "200",
-                # Cognito Configuration
+                # Cognito Configuration - will be updated after CloudFront creation
                 "COGNITO_REGION": self.region,
                 "COGNITO_USER_POOL_ID": user_pool.user_pool_id,
-                "COGNITO_APP_CLIENT_ID": app_client.user_pool_client_id,
-                "COGNITO_DOMAIN": f"{cognito_domain.domain_name}.auth.{self.region}.amazoncognito.com",
-                "COGNITO_REDIRECT_URI": f"https://{distribution.distribution_domain_name}/",
-                "COGNITO_SECRET_NAME": cognito_secret.secret_name
             },
             health_check=ecs.HealthCheck(
                 command=["CMD-SHELL", "curl -f http://localhost:8502/_stcore/health || exit 1"],
@@ -368,7 +304,7 @@ class EcsMcpStack(Stack):
             description="Allow ALB to reach Streamlit UI"
         )
 
-        # Create ECS Service
+        # Create ECS Service (now has container defined)
         service = ecs.FargateService(
             self, "McpService",
             cluster=cluster,
@@ -403,16 +339,84 @@ class EcsMcpStack(Stack):
             )
         )
 
-        # Add ECS service to target group
+        # Add ECS service to target group (now service has containers)
         target_group.add_target(service)
 
-        # Create HTTP listener - Direct forwarding (no authentication at ALB)
+        # Create HTTP listener - ALB is now fully configured
         http_listener = alb.add_listener(
             "HttpListener",
             port=80,
             protocol=elbv2.ApplicationProtocol.HTTP,
             default_action=elbv2.ListenerAction.forward([target_group])
         )
+
+        # FIXED: CloudFront creation AFTER ALB is fully configured (listener + targets)
+        distribution = cloudfront.Distribution(
+            self, "McpDistribution",
+            default_behavior=cloudfront.BehaviorOptions(
+                origin=origins.LoadBalancerV2Origin(
+                    alb,
+                    protocol_policy=cloudfront.OriginProtocolPolicy.HTTP_ONLY
+                ),
+                viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS
+            )
+        )
+
+        # CREATE COGNITO APP CLIENT (using AUTHORIZATION CODE FLOW)
+        # Now references CloudFront domain which is available
+        app_client = cognito.UserPoolClient(
+            self, "McpAppClient",
+            user_pool=user_pool,
+            user_pool_client_name=f"mcp-app-client-{suffix}",
+            generate_secret=True,  # Required for authorization code flow
+            auth_flows=cognito.AuthFlow(
+                user_password=True,
+                user_srp=True,
+                admin_user_password=True
+            ),
+            o_auth=cognito.OAuthSettings(
+                flows=cognito.OAuthFlows(
+                    authorization_code_grant=True,   # Enable authorization code flow
+                    implicit_code_grant=False       # Disable implicit flow
+                ),
+                scopes=[
+                    cognito.OAuthScope.EMAIL,
+                    cognito.OAuthScope.OPENID,
+                    cognito.OAuthScope.PROFILE
+                ],
+                callback_urls=[
+                    f"https://{distribution.distribution_domain_name}/"  # Root URL
+                ],
+                logout_urls=[
+                    f"https://{distribution.distribution_domain_name}/"
+                ]
+            ),
+            access_token_validity=cdk.Duration.hours(1),
+            id_token_validity=cdk.Duration.hours(1),
+            refresh_token_validity=cdk.Duration.days(30)
+        )
+
+        # CREATE SECRETS MANAGER SECRET FOR COGNITO CLIENT SECRET
+        cognito_secret = secretsmanager.Secret(
+            self, "CognitoClientSecret",
+            secret_name=f"mcp-cognito-{suffix}",
+            description="Cognito App Client Secret and Configuration",
+            generate_secret_string=secretsmanager.SecretStringGenerator(
+                secret_string_template=json.dumps({
+                    "user_pool_id": user_pool.user_pool_id,
+                    "client_id": app_client.user_pool_client_id,
+                    "domain": f"{cognito_domain.domain_name}.auth.{self.region}.amazoncognito.com"
+                }),
+                generate_string_key="client_secret",
+                exclude_characters=" %+~`#$&*()|[]{}:;<>?!'\"/\\"
+            )
+        )
+
+        # Update container environment with remaining Cognito configuration
+        container.add_environment("COGNITO_APP_CLIENT_ID", app_client.user_pool_client_id)
+        container.add_environment("COGNITO_DOMAIN", f"{cognito_domain.domain_name}.auth.{self.region}.amazoncognito.com")
+        container.add_environment("COGNITO_REDIRECT_URI", f"https://{distribution.distribution_domain_name}/")
+        container.add_environment("COGNITO_SECRET_NAME", cognito_secret.secret_name)
 
         # Outputs
         cdk.CfnOutput(

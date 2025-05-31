@@ -220,7 +220,7 @@ def get_cognito_token_from_headers():
         elif access_token:
             return access_token
     except Exception as e:
-        st.debug(f"Error accessing ALB headers: {e}")
+        logging.error(f"Error accessing ALB headers: {e}")
     
     return None
 
