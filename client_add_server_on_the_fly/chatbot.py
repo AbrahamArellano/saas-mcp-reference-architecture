@@ -20,10 +20,19 @@ from dotenv import load_dotenv
 from urllib.parse import urlencode, parse_qs, urlparse
 import boto3
 
-load_dotenv() # load env vars from .env
+logging.basicConfig(level=logging.INFO)
+logging.info("🚨 CHATBOT.PY STARTING - DEBUG VERSION")
+print("🚨 CHATBOT.PY STARTING - PRINT VERSION")
+
+# Safe load - only in local development
+if os.path.exists('.env'):
+    load_dotenv()
+elif not os.environ.get('ECS_CONTAINER_METADATA_URI'):
+    # Not in container and no .env file
+    print("Warning: No .env file found for local development")
+    
 API_KEY = os.environ.get("API_KEY")
 
-logging.basicConfig(level=logging.INFO)
 mcp_base_url = os.environ.get('MCP_BASE_URL')
 mcp_command_list = ["uvx", "npx", "node", "python","docker","uv"]
 COOKIE_NAME = "mcp_chat_user_id"
@@ -51,10 +60,12 @@ except Exception:
 
 # NEW FUNCTION: Get Cognito client secret from Secrets Manager
 def get_cognito_client_secret():
+    logging.info(f"🔍 Getting Cognito secret start")
     """Get Cognito client secret from AWS Secrets Manager"""
     try:
         secret_name = os.environ.get('COGNITO_SECRET_NAME')
         if not secret_name:
+            logging.info("❌ COGNITO_SECRET_NAME not found")
             return None
             
         session = boto3.Session()
@@ -62,8 +73,11 @@ def get_cognito_client_secret():
             service_name='secretsmanager',
             region_name=os.environ.get('AWS_REGION', 'us-east-1')
         )
+        logging.info("🔍 Created Secrets Manager client")
         
         response = client.get_secret_value(SecretId=secret_name)
+        
+        logging.info("✅ Successfully retrieved secret from Secrets Manager")
         secret = json.loads(response['SecretString'])
         return secret.get('client_secret')
     except Exception as e:
@@ -75,9 +89,14 @@ def exchange_authorization_code_for_tokens(auth_code, redirect_uri):
     """Exchange authorization code for access and ID tokens"""
     try:
         # Get Cognito configuration from environment
+        logging.info(f"🔍 Starting token exchange for auth code: {auth_code[:10]}...")
         cognito_domain = os.environ.get('COGNITO_DOMAIN')
         client_id = os.environ.get('COGNITO_APP_CLIENT_ID')
         client_secret = get_cognito_client_secret()
+        
+        logging.info(f"🔍 Cognito domain: {cognito_domain}")
+        logging.info(f"🔍 Client ID: {client_id}")
+        logging.info(f"🔍 Client secret exists: {bool(client_secret)}")
         
         if not all([cognito_domain, client_id, client_secret, auth_code]):
             logging.error("Missing Cognito configuration for token exchange")
@@ -104,10 +123,13 @@ def exchange_authorization_code_for_tokens(auth_code, redirect_uri):
         }
         
         # Make token exchange request
+        logging.info("🔍 Making token exchange request to Cognito...")
         response = requests.post(token_url, headers=headers, data=data, timeout=10)
+        logging.info(f"🔍 Token exchange response status: {response.status_code}")
         
         if response.status_code == 200:
             token_data = response.json()
+            logging.info("✅ Successfully exchanged authorization code for tokens")
             logging.info("Successfully exchanged authorization code for tokens")
             return {
                 'access_token': token_data.get('access_token'),
@@ -227,9 +249,11 @@ def get_cognito_token_from_headers():
 # FIXED FUNCTION: User session management - redirect BEFORE any MCP backend calls
 def initialize_user_session():
     """Initialize user session with Cognito authentication and auto-redirect"""
+    logging.info("🔍 === STARTING USER SESSION INITIALIZATION ===")
     
     # Store current URL for redirect purposes
     if 'current_url' not in st.session_state:
+        logging.info("🔍 No authentication found, redirecting to Cognito login")
         st.session_state.current_url = os.environ.get('COGNITO_REDIRECT_URI', 'https://localhost:8502/')
     
     # Check for authorization code or existing tokens FIRST
@@ -237,6 +261,7 @@ def initialize_user_session():
     
     # First check for existing token in session state
     if 'cognito_token' in st.session_state:
+        logging.info(f"🔍 Found Cognito token, attempting authentication...")
         cognito_token = st.session_state.cognito_token
     else:
         # Try to get token from URL, headers, or authorization code
