@@ -7,6 +7,8 @@ from aws_cdk import (
     aws_ecr as ecr,
     aws_logs as logs,
     aws_efs as efs,
+    aws_cognito as cognito,
+    aws_certificatemanager as acm,
     Stack
 )
 from constructs import Construct
@@ -21,6 +23,9 @@ class EcsMcpStack(Stack):
         unique_input = f"{self.account}-{self.region}"
         unique_hash = hashlib.sha256(unique_input.encode('utf-8')).hexdigest()[:8]
         suffix = unique_hash.lower()
+
+        # Custom domain configuration
+        domain_name = "mcp.myitbasics.com"
 
         # Create VPC
         vpc = ec2.Vpc(
@@ -79,6 +84,14 @@ class EcsMcpStack(Stack):
             log_group_name=f"/ecs/mcp-bedrock-{suffix}",
             removal_policy=cdk.RemovalPolicy.DESTROY,
             retention=logs.RetentionDays.ONE_WEEK
+        )
+
+        # Create ACM Certificate for custom domain
+        certificate = acm.Certificate(
+            self, "McpCertificate",
+            domain_name=domain_name,
+            validation=acm.CertificateValidation.from_dns(),
+            subject_alternative_names=[domain_name]  # Explicit SAN
         )
 
         # Create IAM Task Execution Role
@@ -170,9 +183,8 @@ class EcsMcpStack(Stack):
                 "API_KEY": "mcp-demo-key",
                 "MAX_TURNS": "200"
             },
-            # Re-enable health check for real application
             health_check=ecs.HealthCheck(
-                command=["CMD-SHELL", "curl -f http://localhost:8502/healthz || exit 1"],
+                command=["CMD-SHELL", "curl -f http://localhost:8502/_stcore/health || exit 1"],
                 interval=cdk.Duration.seconds(30),
                 timeout=cdk.Duration.seconds(5),
                 retries=3,
@@ -235,7 +247,7 @@ class EcsMcpStack(Stack):
             vpc_subnets=ec2.SubnetSelection(
                 subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS
             ),
-            health_check_grace_period=cdk.Duration.seconds(180)  # Increased for container startup
+            health_check_grace_period=cdk.Duration.seconds(180)
         )
 
         # Create ALB Security Group
@@ -246,11 +258,16 @@ class EcsMcpStack(Stack):
             allow_all_outbound=True
         )
 
-        # Allow HTTP access from anywhere
+        # Allow HTTP and HTTPS access from anywhere
         alb_security_group.add_ingress_rule(
             peer=ec2.Peer.any_ipv4(),
             connection=ec2.Port.tcp(80),
             description="Allow HTTP from anywhere"
+        )
+        alb_security_group.add_ingress_rule(
+            peer=ec2.Peer.any_ipv4(),
+            connection=ec2.Port.tcp(443),
+            description="Allow HTTPS from anywhere"
         )
 
         # Allow ALB to reach ECS on port 8502
@@ -278,7 +295,7 @@ class EcsMcpStack(Stack):
             target_type=elbv2.TargetType.IP,
             health_check=elbv2.HealthCheck(
                 enabled=True,
-                path="/healthz",  # Real application health check endpoint
+                path="/_stcore/health",
                 protocol=elbv2.Protocol.HTTP,
                 port="8502",
                 healthy_http_codes="200",
@@ -292,25 +309,116 @@ class EcsMcpStack(Stack):
         # Add ECS service to target group
         target_group.add_target(service)
 
-        # Create ALB Listener
-        listener = alb.add_listener(
-            "McpListener",
+        # Create HTTP listener (redirects to HTTPS)
+        http_listener = alb.add_listener(
+            "HttpListener",
             port=80,
             protocol=elbv2.ApplicationProtocol.HTTP,
+            default_action=elbv2.ListenerAction.redirect(
+                protocol="HTTPS",
+                port="443"
+            )
+        )
+
+        # Create HTTPS listener
+        https_listener = alb.add_listener(
+            "HttpsListener",
+            port=443,
+            protocol=elbv2.ApplicationProtocol.HTTPS,
+            certificates=[certificate],
             default_action=elbv2.ListenerAction.forward([target_group])
+        )
+
+        # CREATE COGNITO USER POOL (ready for Phase 2)
+        user_pool = cognito.UserPool(
+            self, "McpUserPool",
+            user_pool_name=f"mcp-users-{suffix}",
+            sign_in_aliases=cognito.SignInAliases(email=True),
+            auto_verify=cognito.AutoVerifiedAttrs(email=True),
+            self_sign_up_enabled=True,
+            password_policy=cognito.PasswordPolicy(
+                min_length=8,
+                require_lowercase=True,
+                require_uppercase=True,
+                require_digits=True,
+                require_symbols=False
+            ),
+            removal_policy=cdk.RemovalPolicy.DESTROY
+        )
+
+        # CREATE COGNITO DOMAIN  
+        cognito_domain = cognito.UserPoolDomain(
+            self, "McpCognitoDomain",
+            user_pool=user_pool,
+            cognito_domain=cognito.CognitoDomainOptions(
+                domain_prefix=f"mcp-auth-{suffix}"
+            )
+        )
+
+        # CREATE COGNITO APP CLIENT
+        app_client = cognito.UserPoolClient(
+            self, "McpAppClient",
+            user_pool=user_pool,
+            user_pool_client_name=f"mcp-app-client-{suffix}",
+            generate_secret=True,
+            auth_flows=cognito.AuthFlow(
+                user_password=True,
+                user_srp=True,
+                admin_user_password=True
+            ),
+            o_auth=cognito.OAuthSettings(
+                flows=cognito.OAuthFlows(
+                    authorization_code_grant=True,
+                    implicit_code_grant=False
+                ),
+                scopes=[
+                    cognito.OAuthScope.EMAIL,
+                    cognito.OAuthScope.OPENID,
+                    cognito.OAuthScope.PROFILE
+                ],
+                callback_urls=[f"https://{domain_name}/"],
+                logout_urls=[f"https://{domain_name}/"]
+            ),
+            access_token_validity=cdk.Duration.hours(1),
+            id_token_validity=cdk.Duration.hours(1),
+            refresh_token_validity=cdk.Duration.days(30)
         )
 
         # Outputs
         cdk.CfnOutput(
             self, "LoadBalancerUrl",
-            value=f"http://{alb.load_balancer_dns_name}",
-            description="URL to access the MCP Streamlit UI"
+            value=f"https://{domain_name}",
+            description="HTTPS URL to access the MCP Application"
+        )
+
+        cdk.CfnOutput(
+            self, "LoadBalancerDnsName",
+            value=alb.load_balancer_dns_name,
+            description="ALB DNS name for CNAME record"
+        )
+
+        cdk.CfnOutput(
+            self, "CertificateArn",
+            value=certificate.certificate_arn,
+            description="ACM Certificate ARN"
+        )
+
+        cdk.CfnOutput(
+            self, "DNSValidationInstructions",
+            value=f"Add CNAME record in Bluehost: mcp -> {alb.load_balancer_dns_name}",
+            description="DNS setup instructions"
+        )
+
+        cdk.CfnOutput(
+            self, "CognitoUserPoolId",
+            value=user_pool.user_pool_id,
+            description="Cognito User Pool ID (for Phase 2)"
         )
 
         cdk.CfnOutput(
             self, "EcrRepositoryUri",
             value=ecr_repository.repository_uri,
-            description="ECR Repository URI (auto-populated by CDK)"
+            description="ECR Repository URI"
         )
 
         cdk.CfnOutput(
@@ -323,10 +431,4 @@ class EcsMcpStack(Stack):
             self, "EcsServiceName",
             value=service.service_name,
             description="ECS Service Name"
-        )
-
-        cdk.CfnOutput(
-            self, "DeploymentInfo",
-            value="Docker image built and deployed automatically by CDK",
-            description="Deployment Status"
         )

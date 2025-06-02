@@ -1,0 +1,12 @@
+{
+    "FirstName": "Abraham",
+    "LastName": "Arellano", 
+    "ContactType": "PERSON",
+    "AddressLine1": "123 Main St",
+    "City": "Seattle",
+    "State": "WA",
+    "CountryCode": "US",
+    "ZipCode": "98101",
+    "PhoneNumber": "+1.2065551234",
+    "Email": "aarellat@amazon.de"
+}
