@@ -33,7 +33,7 @@ mcp_command_list = ["uvx", "npx", "node", "python","docker","uv"]
 COOKIE_NAME = "mcp_chat_user_id"
 local_storage = LocalStorage()
 
-# Phase 4: Production-Ready Enhancements
+# Phase 4: Production-Ready Enhancements (Simplified Validation)
 
 # Global state management
 if 'session_lock' not in st.session_state:
@@ -100,120 +100,6 @@ def safe_api_call(func):
                 return None
         return None
     return wrapper
-
-class ValidationError(Exception):
-    """Custom validation error with user-friendly messages"""
-    pass
-
-class InputValidator:
-    """Enhanced input validation with detailed feedback"""
-    
-    @staticmethod
-    def validate_server_id(server_id: str) -> Tuple[bool, str]:
-        """Validate MCP server ID with detailed feedback"""
-        if not server_id:
-            return False, "Server ID cannot be empty"
-        
-        if not server_id.strip():
-            return False, "Server ID cannot contain only whitespace"
-        
-        if len(server_id) < 2:
-            return False, "Server ID must be at least 2 characters long"
-        
-        if len(server_id) > 50:
-            return False, "Server ID must be 50 characters or less"
-        
-        if not re.match(r'^[a-zA-Z][a-zA-Z0-9_-]*$', server_id):
-            return False, "Server ID must start with a letter and contain only letters, numbers, underscores, and hyphens"
-        
-        if server_id.lower() in ['system', 'admin', 'root', 'api', 'internal']:
-            return False, "Server ID cannot use reserved names"
-            
-        return True, "Valid server ID"
-    
-    @staticmethod
-    def validate_server_name(server_name: str) -> Tuple[bool, str]:
-        """Validate server name"""
-        if not server_name:
-            return False, "Server name cannot be empty"
-        
-        if not server_name.strip():
-            return False, "Server name cannot contain only whitespace"
-        
-        if len(server_name.strip()) < 3:
-            return False, "Server name must be at least 3 characters long"
-        
-        if len(server_name) > 100:
-            return False, "Server name must be 100 characters or less"
-            
-        return True, "Valid server name"
-    
-    @staticmethod
-    def validate_json_config(json_str: str) -> Tuple[bool, str, Optional[Dict]]:
-        """Validate JSON configuration with detailed error messages"""
-        if not json_str.strip():
-            return True, "No JSON provided", None
-        
-        try:
-            parsed = json.loads(json_str)
-            
-            if not isinstance(parsed, dict):
-                return False, "JSON must be an object (dictionary), not a list or primitive", None
-            
-            # Check for required structure
-            if "mcpServers" in parsed:
-                servers = parsed["mcpServers"]
-                if not isinstance(servers, dict):
-                    return False, "mcpServers must be an object", None
-                
-                if not servers:
-                    return False, "mcpServers cannot be empty", None
-                
-                # Validate each server configuration
-                for server_id, config in servers.items():
-                    if not isinstance(config, dict):
-                        return False, f"Server '{server_id}' configuration must be an object", None
-                    
-                    if "server_url" in config:
-                        # Remote server validation
-                        if not config["server_url"].startswith(("http://", "https://")):
-                            return False, f"Server '{server_id}' URL must start with http:// or https://", None
-                    else:
-                        # Local server validation
-                        if "command" not in config:
-                            return False, f"Server '{server_id}' must have 'command' field", None
-                        if config["command"] not in mcp_command_list:
-                            return False, f"Server '{server_id}' command must be one of: {', '.join(mcp_command_list)}", None
-            
-            return True, "Valid JSON configuration", parsed
-            
-        except json.JSONDecodeError as e:
-            return False, f"Invalid JSON format: {str(e)}", None
-    
-    @staticmethod
-    def validate_environment_vars(env_str: str) -> Tuple[bool, str, Optional[Dict]]:
-        """Validate environment variables JSON"""
-        if not env_str.strip():
-            return True, "No environment variables provided", {}
-        
-        try:
-            parsed = json.loads(env_str)
-            
-            if not isinstance(parsed, dict):
-                return False, "Environment variables must be a JSON object", None
-            
-            for key, value in parsed.items():
-                if not isinstance(key, str):
-                    return False, f"Environment variable key '{key}' must be a string", None
-                if not isinstance(value, str):
-                    return False, f"Environment variable value for '{key}' must be a string", None
-                if not re.match(r'^[A-Z_][A-Z0-9_]*$', key):
-                    return False, f"Environment variable '{key}' should follow naming convention (uppercase letters, numbers, underscores)", None
-            
-            return True, "Valid environment variables", parsed
-            
-        except json.JSONDecodeError as e:
-            return False, f"Invalid JSON format for environment variables: {str(e)}", None
 
 class CacheManager:
     """Smart caching for API responses"""
@@ -357,17 +243,8 @@ def generate_random_user_id():
     local_storage.setItem(COOKIE_NAME, st.session_state.user_id)
     logging.info(f"Generated new random user ID: {st.session_state.user_id}")
     
-# Save to cookie when user manually changes ID (ORIGINAL)
+# Save to cookie when user manually changes ID (ORIGINAL) - Simplified
 def save_user_id():
-    # Validate user ID
-    if not st.session_state.user_id_input.strip():
-        st.error("User ID cannot be empty")
-        return
-    
-    if len(st.session_state.user_id_input) > 32:
-        st.error("User ID must be 32 characters or less")
-        return
-    
     st.session_state.user_id = st.session_state.user_id_input
     local_storage.setItem(COOKIE_NAME, st.session_state.user_id)
     logging.info(f"Saved user ID: {st.session_state.user_id}")
@@ -771,7 +648,7 @@ def request_delete_mcp_server(server_id):
 @safe_api_call
 @performance_monitor
 def request_add_mcp_server(server_id, server_name, command, args=[], env=None, config_json={}):
-    """Add MCP server with validation"""
+    """Add MCP server with simplified validation"""
     url = mcp_base_url.rstrip('/') + '/v1/add/mcp_server'
     status = False
     try:
@@ -954,7 +831,7 @@ if st.session_state.should_rerun:
     st.session_state.should_rerun = False
     st.rerun()
 
-# Phase 2: Enhanced MCP Server Management Functions (Enhanced with Phase 4)
+# Enhanced MCP Server Management Functions (Simplified Validation)
 
 def show_delete_confirmation():
     """Set flag to show delete confirmation dialog and update selected server ID"""
@@ -1005,9 +882,9 @@ def delete_mcp_server_handle():
             st.session_state.delete_server_status = False
             st.session_state.delete_server_msg = f"Error: {str(e)}"
 
-# Enhanced MCP server handling with validation
+# Simplified MCP server handling - validate on submit
 def add_new_mcp_server_handle():
-    """Enhanced server addition with comprehensive validation"""
+    """Simplified server addition - validate on submit with clear error messages"""
     status, msg = True, "The server has been added successfully!"
     
     try:
@@ -1019,65 +896,82 @@ def add_new_mcp_server_handle():
         server_env = st.session_state.get('new_mcp_server_env', '')
         server_config_json = st.session_state.get('new_mcp_server_json_config', '').strip()
         
-        # Enhanced validation
-        valid_name, name_msg = InputValidator.validate_server_name(server_name)
-        if not valid_name:
-            return status, msg  # Error message set in validation
+        # Simple validation with clear messages
+        if not server_name:
+            status, msg = False, "❌ **Server name is required**"
+            return status, msg
+        
+        if len(server_name) < 3:
+            status, msg = False, "❌ **Server name must be at least 3 characters long**"
+            return status, msg
         
         if server_name in st.session_state.mcp_servers:
-            status, msg = False, "⚠️ Server name already exists! Please choose a different name."
+            status, msg = False, f"⚠️ **Server name '{server_name}' already exists!** Please choose a different name."
             return status, msg
         
         config_json = {}
         
         # Process JSON configuration if provided
         if server_config_json:
-            valid_json, json_msg, parsed_json = InputValidator.validate_json_config(server_config_json)
-            if not valid_json:
-                status, msg = False, f"❌ JSON Configuration Error: {json_msg}"
-                return status, msg
-            
-            config_json = parsed_json
-            if "mcpServers" in config_json:
-                config_json = config_json["mcpServers"]
+            try:
+                config_json = json.loads(server_config_json)
                 
-            server_id = list(config_json.keys())[0]
-            server_conf = config_json[server_id]
-            
-            # Check if this is a remote server configuration
-            if "server_url" in server_conf:
-                # This is a remote server configuration
-                server_url = server_conf["server_url"]
-                http_headers = server_conf.get("http_headers", {})
-                http_timeout = server_conf.get("http_timeout", 30)
-            else:
-                # This is a local server configuration
-                server_cmd = server_conf["command"]
-                server_args = server_conf["args"]
-                server_env = server_conf.get('env', {})
+                if "mcpServers" in config_json:
+                    config_json = config_json["mcpServers"]
+                    
+                if not config_json:
+                    status, msg = False, "❌ **JSON configuration is empty**"
+                    return status, msg
+                    
+                server_id = list(config_json.keys())[0]
+                server_conf = config_json[server_id]
+                
+                # Check if this is a remote server configuration
+                if "server_url" in server_conf:
+                    # This is a remote server configuration
+                    if not server_conf["server_url"].startswith(("http://", "https://")):
+                        status, msg = False, "❌ **Server URL must start with http:// or https://**"
+                        return status, msg
+                else:
+                    # This is a local server configuration
+                    if "command" not in server_conf:
+                        status, msg = False, "❌ **JSON configuration missing 'command' field**"
+                        return status, msg
+                    server_cmd = server_conf["command"]
+                    server_args = server_conf["args"]
+                    server_env = server_conf.get('env', {})
+                    
+            except json.JSONDecodeError as e:
+                status, msg = False, f"❌ **Invalid JSON format**: {str(e)}"
+                return status, msg
         else:
             # Manual configuration validation
-            valid_id, id_msg = InputValidator.validate_server_id(server_id)
-            if not valid_id:
-                status, msg = False, f"❌ Server ID Error: {id_msg}"
+            if not server_id:
+                status, msg = False, "❌ **Server ID is required when using manual configuration**"
+                return status, msg
+            
+            if not re.match(r'^[a-zA-Z][a-zA-Z0-9_-]*$', server_id):
+                status, msg = False, "❌ **Server ID must start with a letter and contain only letters, numbers, underscores, and hyphens**"
                 return status, msg
             
             if server_id in st.session_state.mcp_servers.values():
-                status, msg = False, "⚠️ Server ID already exists! Please choose a different ID."
+                status, msg = False, f"⚠️ **Server ID '{server_id}' already exists!** Please choose a different ID."
                 return status, msg
             
             if not server_cmd or server_cmd not in mcp_command_list:
-                status, msg = False, f"❌ Invalid command! Must be one of: {', '.join(mcp_command_list)}"
+                status, msg = False, f"❌ **Invalid command!** Must be one of: {', '.join(mcp_command_list)}"
                 return status, msg
         
-        # Validate environment variables
-        if server_env:
-            if isinstance(server_env, str):
-                valid_env, env_msg, parsed_env = InputValidator.validate_environment_vars(server_env)
-                if not valid_env:
-                    status, msg = False, f"❌ Environment Variables Error: {env_msg}"
+        # Validate environment variables if provided
+        if server_env and isinstance(server_env, str):
+            try:
+                server_env = json.loads(server_env)
+                if not isinstance(server_env, dict):
+                    status, msg = False, "❌ **Environment variables must be a JSON object**"
                     return status, msg
-                server_env = parsed_env
+            except json.JSONDecodeError as e:
+                status, msg = False, f"❌ **Invalid environment variables JSON**: {str(e)}"
+                return status, msg
         
         # Process arguments
         if isinstance(server_args, str):
@@ -1085,7 +979,7 @@ def add_new_mcp_server_handle():
 
         logging.info(f'User {st.session_state.user_id} adding new MCP server: {server_id}:{server_name}')
         
-        # Make API call with enhanced error handling
+        # Make API call
         with st.spinner('Adding the server...'):
             result = request_add_mcp_server(server_id, server_name, server_cmd, 
                                           args=server_args, env=server_env, config_json=config_json)
@@ -1094,10 +988,10 @@ def add_new_mcp_server_handle():
                 if status:
                     st.session_state.mcp_servers[server_name] = server_id
             else:
-                status, msg = False, "Failed to add server due to connection error"
+                status, msg = False, "❌ **Failed to add server due to connection error**"
         
     except Exception as e:
-        status, msg = False, f"❌ Unexpected error: {str(e)}"
+        status, msg = False, f"❌ **Unexpected error**: {str(e)}"
         logging.error(f"Error in add_new_mcp_server_handle: {e}")
     
     st.session_state.new_mcp_server_fd_status = status
@@ -1105,7 +999,7 @@ def add_new_mcp_server_handle():
 
 @st.dialog('MCP Server Management')
 def add_new_mcp_server():
-    # Initialize session state variables for deletion if they don't exist
+    # Initialize session state variables
     if 'delete_server_status' not in st.session_state:
         st.session_state.delete_server_status = False
     if 'delete_server_msg' not in st.session_state:
@@ -1115,13 +1009,12 @@ def add_new_mcp_server():
     if 'selected_server_id' not in st.session_state:
         st.session_state.selected_server_id = ""
     
-    # Create tabs for Explore, Add, and Delete
+    # Create tabs
     explore_tab, add_tab, delete_tab = st.tabs(["🔍 Explore Servers", "➕ Add Server", "🗑️ Delete Server"])
     
-    # Explore Tab - Server Configuration Viewer
+    # Explore Tab
     with explore_tab:
         if st.session_state.mcp_servers:
-            # Select server from dropdown
             selected_server_name = st.selectbox(
                 'Select MCP server to explore',
                 list(st.session_state.mcp_servers.keys()),
@@ -1132,7 +1025,6 @@ def add_new_mcp_server():
                 server_id = st.session_state.mcp_servers[selected_server_name]
                 
                 try:
-                    # Get server details with error handling
                     with st.spinner("Loading server information..."):
                         server_config = request_list_mcp_server_config(server_id)
                         server_tools = request_list_mcp_server_tools(server_id)
@@ -1168,15 +1060,16 @@ def add_new_mcp_server():
                                 st.markdown(f"**{i}. {tool_name}:** {tool_desc}")
                     else:
                         st.info("No tools available for this server")
+                        
                 except Exception as e:
                     st.error(f"❌ **Error loading server information**: {str(e)}")
                     logging.error(f"Error in explore tab: {e}")
         else:
             st.info("No MCP servers available to explore. Add a server first!")
     
-    # Add Tab - Enhanced with comprehensive validation
+    # Add Tab - Simplified validation
     with add_tab:
-        # Enhanced error/success messaging with auto-clear
+        # Show error/success messages with auto-clear
         if 'new_mcp_server_fd_status' in st.session_state:
             if st.session_state.new_mcp_server_fd_status:
                 success_container = st.success(st.session_state.new_mcp_server_fd_msg, icon="✅")
@@ -1194,7 +1087,7 @@ def add_new_mcp_server():
                 if st.session_state.get('new_mcp_server_fd_msg'):
                     st.error(st.session_state.new_mcp_server_fd_msg, icon="🚨")
 
-        # Pre-filled examples section
+        # Pre-filled examples
         st.markdown("### 📋 Quick Start Examples")
         col1, col2 = st.columns(2)
         
@@ -1222,22 +1115,13 @@ def add_new_mcp_server():
   }
 }"""
 
-        # Create form for adding new server with enhanced validation
+        # Simple form - always enabled submit button
         with st.form("add_mcp_server_form"):
-            # Server name with real-time validation
             new_mcp_server_name = st.text_input("Server Name *", 
                                                 value="", 
-                                                placeholder="Enter a descriptive name (3-100 characters)", 
+                                                placeholder="Enter a descriptive name for this server", 
                                                 key="new_mcp_server_name",
                                                 help="This name will appear in the server list for easy identification")
-            
-            # Real-time validation feedback for server name
-            if new_mcp_server_name:
-                valid_name, name_msg = InputValidator.validate_server_name(new_mcp_server_name)
-                if valid_name:
-                    st.success(f"✅ {name_msg}")
-                else:
-                    st.error(f"❌ {name_msg}")
             
             new_mcp_server_config_json = st.text_area("JSON Configuration", 
                                         height=200,
@@ -1245,89 +1129,64 @@ def add_new_mcp_server():
                                         placeholder='{"mcpServers": {"server_name": {"command": "npx", "args": ["-y", "package-name"]}}}',
                                         help="Provide complete MCP server configuration in JSON format. Use examples above or manual config below.")
             
-            # Enhanced JSON validation with real-time feedback
+            # Simple JSON preview
             if new_mcp_server_config_json:
-                valid_json, json_msg, parsed_json = InputValidator.validate_json_config(new_mcp_server_config_json)
-                if valid_json:
-                    st.success(f"✅ {json_msg}")
-                    if parsed_json:
-                        st.markdown("#### JSON Preview")
-                        st.code(json.dumps(parsed_json, indent=2), language="json")
-                else:
-                    st.error(f"❌ {json_msg}")
+                try:
+                    parsed_json = json.loads(new_mcp_server_config_json)
+                    st.markdown("#### ✅ JSON Preview")
+                    st.code(json.dumps(parsed_json, indent=2), language="json")
+                except json.JSONDecodeError as e:
+                    st.markdown("#### ❌ JSON Error")
+                    st.error(f"Invalid JSON: {str(e)}")
                     
             with st.expander(label='Manual Configuration (Alternative)', expanded=False):
-                new_mcp_server_id = st.text_input("Server ID *", 
+                new_mcp_server_id = st.text_input("Server ID", 
                                                 value="", 
                                                 placeholder="unique_server_id", 
                                                 key="new_mcp_server_id",
-                                                help="Unique identifier for this server (letters, numbers, underscores, hyphens)")
-                
-                # Real-time validation for server ID
-                if new_mcp_server_id:
-                    valid_id, id_msg = InputValidator.validate_server_id(new_mcp_server_id)
-                    if valid_id:
-                        st.success(f"✅ {id_msg}")
-                    else:
-                        st.error(f"❌ {id_msg}")
+                                                help="Unique identifier for this server")
 
-                new_mcp_server_cmd = st.selectbox("Run Command *", 
+                new_mcp_server_cmd = st.selectbox("Run Command", 
                                                 mcp_command_list, 
                                                 key="new_mcp_server_cmd",
                                                 help="Command used to execute the MCP server")
+                                                
                 new_mcp_server_args = st.text_area("Run Arguments", 
                                                 value="", key="new_mcp_server_args",
                                                 placeholder="-y @modelcontextprotocol/server-filesystem /path/to/directory",
                                                 help="Command line arguments for the MCP server")
+                                                
                 new_mcp_server_env = st.text_area("Environment Variables", 
                                                 value="", key="new_mcp_server_env",
                                                 placeholder='{"API_KEY": "your_key_here", "PARAM": "value"}',
                                                 help="Environment variables in JSON format")
-                
-                # Real-time validation for environment variables
-                if new_mcp_server_env:
-                    valid_env, env_msg, parsed_env = InputValidator.validate_environment_vars(new_mcp_server_env)
-                    if valid_env:
-                        st.success(f"✅ {env_msg}")
-                    else:
-                        st.error(f"❌ {env_msg}")
 
-            # Enhanced submit button with validation state
-            can_submit = bool(new_mcp_server_name and (new_mcp_server_config_json or 
-                            (new_mcp_server_id and new_mcp_server_cmd)))
-            
+            # Always enabled submit button - validate on submit
             submitted = st.form_submit_button("Add Server", 
                                               on_click=add_new_mcp_server_handle,
-                                              disabled=not can_submit,
                                               use_container_width=True)
-            
-            if not can_submit:
-                st.info("💡 Please provide either a JSON configuration or fill out the manual configuration fields.")
     
-    # Delete Tab - Enhanced with better error handling
+    # Delete Tab
     with delete_tab:
-        # Display status messages for deletion
+        # Display status messages
         if 'delete_server_status' in st.session_state:
             if st.session_state.delete_server_status:
                 st.success(st.session_state.delete_server_msg, icon="✅")
-                # Clear the status after showing
                 st.session_state.delete_server_status = False
                 st.session_state.delete_server_msg = ""
             else:
                 if 'delete_server_msg' in st.session_state and st.session_state.delete_server_msg:
                     st.error(st.session_state.delete_server_msg, icon="🚨")
         
-        # Filter out built-in servers that shouldn't be deleted
+        # Filter out built-in servers
         deletable_servers = [server for server in st.session_state.mcp_servers 
                            if "Built-in" not in server]
         
         if deletable_servers:
-            # Create a form for deletion
             with st.form("delete_form"):
                 st.markdown("### ⚠️ Delete MCP Server")
                 st.warning("This action cannot be undone. The server will be permanently removed from your session.")
                 
-                # Add a dropdown to select which server to delete
                 server_to_delete = st.selectbox(
                     'Select server to delete',
                     deletable_servers,
@@ -1335,16 +1194,13 @@ def add_new_mcp_server():
                     help="Choose the MCP server you want to remove"
                 )
                 
-                # Show server info for confirmation
                 if server_to_delete:
                     server_id = st.session_state.mcp_servers[server_to_delete]
                     st.info(f"**Server ID:** {server_id}")
                 
-                # Request confirmation button
                 delete_button = st.form_submit_button(
                     "🗑️ Request Deletion", 
                     on_click=show_delete_confirmation,
-                    disabled=False,
                     use_container_width=True
                 )
         else:
@@ -1353,7 +1209,7 @@ def add_new_mcp_server():
                      disabled=True,
                      use_container_width=True)
         
-        # Show confirmation dialog outside the form
+        # Confirmation dialog
         if st.session_state.get('show_delete_confirmation', False):
             st.markdown("---")
             st.error(f"⚠️ **Confirm Deletion**\n\nAre you sure you want to delete the server '{st.session_state.server_to_delete}'?\n\nThis action cannot be undone.")
@@ -1377,7 +1233,7 @@ def on_system_prompt_change():
         
 # UI
 with st.sidebar:
-    # User ID Management with validation
+    # User ID Management - simplified
     col1, col2 = st.columns([3, 1])
     with col1:
         st.session_state.user_id = st.text_input('User ID', 
@@ -1391,7 +1247,7 @@ with st.sidebar:
                  on_click=generate_random_user_id, 
                  help="Generate random user ID")
 
-    # Model Selection (always visible)
+    # Model Selection
     if st.session_state.model_names:
         llm_model_name = st.selectbox('Model',
                                       list(st.session_state.model_names.keys()),
@@ -1429,7 +1285,7 @@ with st.sidebar:
                                                   value=True,
                                                   help="Display response as it's being generated")
 
-    # Enhanced MCP Servers Section with status info
+    # MCP Servers Section
     st.markdown("### MCP Servers")
     
     # Show memory usage if significant
@@ -1450,7 +1306,7 @@ with st.sidebar:
               use_container_width=True,
               help="Add, explore, or delete MCP servers")
     
-    # Clear conversation button with cleanup
+    # Clear conversation button
     st.button("🗑️ Clear Conversation", 
              on_click=clear_conversation, 
              key="clear_button",
@@ -1462,7 +1318,7 @@ st.title("💬 Bedrock Chatbot with MCP")
 # Enhanced Quick Start section
 st.info("""
 💡 **Production-Ready Experience:** This chatbot features comprehensive error handling, performance monitoring, 
-input validation, memory management, and robust caching. Use "Manage MCP Servers" to add powerful external capabilities.
+smart caching, memory management, and simplified validation. Use "Manage MCP Servers" to add powerful external capabilities.
 """)
 
 # Display version information
@@ -1503,7 +1359,7 @@ if prompt := st.chat_input("Type your message here..."):
                                 }
                             )
                 
-                # Enhanced streaming response processing with error recovery
+                # Enhanced streaming response processing
                 if st.session_state.enable_stream:
                     if isinstance(response, requests.Response):
                         # Initialize enhanced progress tracking
