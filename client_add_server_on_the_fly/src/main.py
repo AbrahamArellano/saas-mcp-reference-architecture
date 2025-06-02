@@ -586,6 +586,8 @@ async def add_mcp_server(
     session = await get_or_create_user_session(request, auth)
     user_id = session.user_id
     
+    logging.info(f"BACKEND_DEBUG: Received request from user {user_id}") 
+    
     # Use session lock to ensure thread-safe operations
     async with session.lock:
         if data.server_id in session.mcp_clients:
@@ -599,6 +601,8 @@ async def add_mcp_server(
         server_script_args = data.args
         server_script_envs = data.env
         server_desc = data.server_desc if data.server_desc else data.server_id
+        
+        logging.info(f"BACKEND_DEBUG: Raw request data: {data.model_dump()}")   
         
         # Process configuration JSON
         if data.config_json:
@@ -630,6 +634,9 @@ async def add_mcp_server(
             
         # Connect to MCP server
         mcp_client = MCPClient(name=f"{session.user_id}_{server_id}")
+        logging.info(f"BACKEND_DEBUG: server_url:{data.server_url if hasattr(data, 'server_url') else 'None'}")
+        
+        
         try:
             # Check if this is an HTTP connection
             if data.server_url and (data.server_url.startswith('http://') or data.server_url.startswith('https://')):

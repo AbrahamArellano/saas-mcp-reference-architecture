@@ -172,7 +172,7 @@ class MCPClient:
             # async def init(self):
             try:
                 async with asyncio.timeout(self.timeout):
-                    logger.info(f"Connecting to {self.url}")
+                    logger.info(f"MCP-Client - Connecting to {self.url}")
                     self.stream_context = streamablehttp_client(
                         self.url,
                         headers=self.headers
@@ -184,7 +184,7 @@ class MCPClient:
                     await self.session.__aenter__()
                     await self.session.initialize()
 
-                    logger.info("Connection established successfully")
+                    logger.info("MCP-Client - Connection established successfully")
                     return self
 
             except asyncio.TimeoutError:

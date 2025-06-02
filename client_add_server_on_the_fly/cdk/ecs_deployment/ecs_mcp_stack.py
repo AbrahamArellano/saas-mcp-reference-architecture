@@ -4,6 +4,7 @@ from aws_cdk import (
     aws_ecs as ecs,
     aws_iam as iam,
     aws_elasticloadbalancingv2 as elbv2,
+    aws_elasticloadbalancingv2_actions as elbv2_actions,
     aws_ecr as ecr,
     aws_logs as logs,
     aws_efs as efs,
@@ -136,6 +137,61 @@ class EcsMcpStack(Stack):
                     ]
                 )
             }
+        )
+
+        # CREATE COGNITO USER POOL
+        user_pool = cognito.UserPool(
+            self, "McpUserPool",
+            user_pool_name=f"mcp-users-{suffix}",
+            sign_in_aliases=cognito.SignInAliases(email=True),
+            auto_verify=cognito.AutoVerifiedAttrs(email=True),
+            self_sign_up_enabled=True,
+            password_policy=cognito.PasswordPolicy(
+                min_length=8,
+                require_lowercase=True,
+                require_uppercase=True,
+                require_digits=True,
+                require_symbols=False
+            ),
+            removal_policy=cdk.RemovalPolicy.DESTROY
+        )
+
+        # CREATE COGNITO DOMAIN  
+        cognito_domain = cognito.UserPoolDomain(
+            self, "McpCognitoDomain",
+            user_pool=user_pool,
+            cognito_domain=cognito.CognitoDomainOptions(
+                domain_prefix=f"mcp-auth-{suffix}"
+            )
+        )
+
+        # CREATE COGNITO APP CLIENT
+        app_client = cognito.UserPoolClient(
+            self, "McpAppClient",
+            user_pool=user_pool,
+            user_pool_client_name=f"mcp-app-client-{suffix}",
+            generate_secret=True,
+            auth_flows=cognito.AuthFlow(
+                user_password=True,
+                user_srp=True,
+                admin_user_password=True
+            ),
+            o_auth=cognito.OAuthSettings(
+                flows=cognito.OAuthFlows(
+                    authorization_code_grant=True,
+                    implicit_code_grant=False
+                ),
+                scopes=[
+                    cognito.OAuthScope.EMAIL,
+                    cognito.OAuthScope.OPENID,
+                    cognito.OAuthScope.PROFILE
+                ],
+                callback_urls=[f"https://{domain_name}/oauth2/idpresponse"],
+                logout_urls=[f"https://{domain_name}/oauth2/idpresponse"]
+            ),
+            access_token_validity=cdk.Duration.hours(1),
+            id_token_validity=cdk.Duration.hours(1),
+            refresh_token_validity=cdk.Duration.days(30)
         )
 
         # Create EFS Volume Configuration
@@ -320,75 +376,25 @@ class EcsMcpStack(Stack):
             )
         )
 
-        # Create HTTPS listener
+        # Create HTTPS listener with Cognito authentication
         https_listener = alb.add_listener(
             "HttpsListener",
             port=443,
             protocol=elbv2.ApplicationProtocol.HTTPS,
             certificates=[certificate],
-            default_action=elbv2.ListenerAction.forward([target_group])
-        )
-
-        # CREATE COGNITO USER POOL (ready for Phase 2)
-        user_pool = cognito.UserPool(
-            self, "McpUserPool",
-            user_pool_name=f"mcp-users-{suffix}",
-            sign_in_aliases=cognito.SignInAliases(email=True),
-            auto_verify=cognito.AutoVerifiedAttrs(email=True),
-            self_sign_up_enabled=True,
-            password_policy=cognito.PasswordPolicy(
-                min_length=8,
-                require_lowercase=True,
-                require_uppercase=True,
-                require_digits=True,
-                require_symbols=False
-            ),
-            removal_policy=cdk.RemovalPolicy.DESTROY
-        )
-
-        # CREATE COGNITO DOMAIN  
-        cognito_domain = cognito.UserPoolDomain(
-            self, "McpCognitoDomain",
-            user_pool=user_pool,
-            cognito_domain=cognito.CognitoDomainOptions(
-                domain_prefix=f"mcp-auth-{suffix}"
+            default_action=elbv2_actions.AuthenticateCognitoAction(
+                user_pool=user_pool,
+                user_pool_client=app_client,
+                user_pool_domain=cognito_domain,
+                next=elbv2.ListenerAction.forward([target_group])
             )
-        )
-
-        # CREATE COGNITO APP CLIENT
-        app_client = cognito.UserPoolClient(
-            self, "McpAppClient",
-            user_pool=user_pool,
-            user_pool_client_name=f"mcp-app-client-{suffix}",
-            generate_secret=True,
-            auth_flows=cognito.AuthFlow(
-                user_password=True,
-                user_srp=True,
-                admin_user_password=True
-            ),
-            o_auth=cognito.OAuthSettings(
-                flows=cognito.OAuthFlows(
-                    authorization_code_grant=True,
-                    implicit_code_grant=False
-                ),
-                scopes=[
-                    cognito.OAuthScope.EMAIL,
-                    cognito.OAuthScope.OPENID,
-                    cognito.OAuthScope.PROFILE
-                ],
-                callback_urls=[f"https://{domain_name}/"],
-                logout_urls=[f"https://{domain_name}/"]
-            ),
-            access_token_validity=cdk.Duration.hours(1),
-            id_token_validity=cdk.Duration.hours(1),
-            refresh_token_validity=cdk.Duration.days(30)
         )
 
         # Outputs
         cdk.CfnOutput(
             self, "LoadBalancerUrl",
             value=f"https://{domain_name}",
-            description="HTTPS URL to access the MCP Application"
+            description="HTTPS URL to access the MCP Application (now with Cognito auth)"
         )
 
         cdk.CfnOutput(
@@ -404,15 +410,21 @@ class EcsMcpStack(Stack):
         )
 
         cdk.CfnOutput(
-            self, "DNSValidationInstructions",
-            value=f"Add CNAME record in Bluehost: mcp -> {alb.load_balancer_dns_name}",
-            description="DNS setup instructions"
+            self, "CognitoUserPoolId",
+            value=user_pool.user_pool_id,
+            description="Cognito User Pool ID"
         )
 
         cdk.CfnOutput(
-            self, "CognitoUserPoolId",
-            value=user_pool.user_pool_id,
-            description="Cognito User Pool ID (for Phase 2)"
+            self, "CognitoAppClientId",
+            value=app_client.user_pool_client_id,
+            description="Cognito App Client ID"
+        )
+
+        cdk.CfnOutput(
+            self, "CognitoLoginUrl",
+            value=f"https://{cognito_domain.domain_name}.auth.{self.region}.amazoncognito.com/login?client_id={app_client.user_pool_client_id}&response_type=code&scope=email+openid+profile&redirect_uri=https://{domain_name}/",
+            description="Cognito Hosted UI Login URL"
         )
 
         cdk.CfnOutput(

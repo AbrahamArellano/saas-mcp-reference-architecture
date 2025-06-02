@@ -15,8 +15,10 @@ import uuid
 from io import BytesIO
 from streamlit_local_storage import LocalStorage
 import copy
+import jwt  # Only for token display
 from dotenv import load_dotenv
-load_dotenv() # load env vars from .env
+
+load_dotenv()  # load environment variables from .env
 API_KEY = os.environ.get("API_KEY")
 
 logging.basicConfig(level=logging.INFO)
@@ -24,7 +26,8 @@ mcp_base_url = os.environ.get('MCP_BASE_URL')
 mcp_command_list = ["uvx", "npx", "node", "python","docker","uv"]
 COOKIE_NAME = "mcp_chat_user_id"
 local_storage = LocalStorage()
-# User session management
+
+# User session management (ORIGINAL)
 def initialize_user_session():
     """Initialize user session, ensuring each user has a unique identifier"""    
     # Try to get user ID from cookie
@@ -39,26 +42,61 @@ def initialize_user_session():
             # Save to LocalStorage
             local_storage.setItem(COOKIE_NAME, st.session_state.user_id)
     
-# Function to generate random user ID
+# Function to generate random user ID (ORIGINAL)
 def generate_random_user_id():
     st.session_state.user_id = str(uuid.uuid4())[:8]
     # Update cookie
     local_storage.setItem(COOKIE_NAME, st.session_state.user_id)
     logging.info(f"Generated new random user ID: {st.session_state.user_id}")
     
-# Save to cookie when user manually changes ID
+# Save to cookie when user manually changes ID (ORIGINAL)
 def save_user_id():
     st.session_state.user_id = st.session_state.user_id_input
     local_storage.setItem(COOKIE_NAME, st.session_state.user_id)
     logging.info(f"Saved user ID: {st.session_state.user_id}")
 
+# NEW: Cognito info for display only (does NOT affect user_id)
+def get_cognito_info_for_display():
+    """Get Cognito info for sidebar display only - does not affect MCP operations"""
+    try:
+        access_token = st.context.headers.get("x-amzn-oidc-accesstoken")
+        oidc_data = st.context.headers.get("x-amzn-oidc-data")
+        user_identity = st.context.headers.get("x-amzn-oidc-identity")
+        
+        if access_token:
+            st.session_state.cognito_access_token = access_token
+        
+        if oidc_data:
+            try:
+                decoded = jwt.decode(oidc_data, options={"verify_signature": False})
+                st.session_state.cognito_user_info = {
+                    'email': decoded.get('email'),
+                    'username': decoded.get('preferred_username', decoded.get('cognito:username')),
+                    'name': decoded.get('name'),
+                    'sub': decoded.get('sub'),
+                    'alb_identity': user_identity
+                }
+            except Exception as e:
+                logging.error(f"Failed to decode OIDC data: {e}")
+                st.session_state.cognito_user_info = {}
+        
+        # Show ALB header status for debugging
+        st.session_state.alb_headers_status = {
+            "x-amzn-oidc-identity": "✅ Present" if user_identity else "❌ Not found",
+            "x-amzn-oidc-data": "✅ Present" if oidc_data else "❌ Not found", 
+            "x-amzn-oidc-accesstoken": "✅ Present" if access_token else "❌ Not found"
+        }
+    except Exception as e:
+        logging.error(f"Token display error: {e}")
+
 initialize_user_session()
+get_cognito_info_for_display()  # For display only
     
 def get_auth_headers():
-    """Build authentication headers containing user identity"""
+    """Build authentication headers containing user identity - ORIGINAL"""
     headers = {
         'Authorization': f'Bearer {API_KEY}',
-        'X-User-ID': st.session_state.user_id  # Add user ID header
+        'X-User-ID': st.session_state.user_id  # Uses original 8-char user ID
     }
     return headers
 
@@ -86,6 +124,8 @@ def request_list_mcp_servers():
 
 def request_add_mcp_server(server_id, server_name, command, args=[], env=None, config_json={}):
     url = mcp_base_url.rstrip('/') + '/v1/add/mcp_server'
+    logging.info(f"HTTP_DEBUG: Making request to {url}")
+    
     status = False
     try:
         payload = {
@@ -95,9 +135,20 @@ def request_add_mcp_server(server_id, server_name, command, args=[], env=None, c
             "args": args,
             "config_json": config_json
         }
+        logging.info(f"FRONTEND_DEBUG: API payload being sent: {payload}")
+        logging.info(f"FRONTEND_DEBUG: Headers being sent: {get_auth_headers()}")
+        
+        
         if env:
             payload["env"] = env
         response = requests.post(url, json=payload, headers=get_auth_headers())
+        
+        
+        logging.info(f"HTTP_DEBUG: Request status code: {response.status_code}")
+        logging.info(f"HTTP_DEBUG: Response headers: {dict(response.headers)}")
+        logging.info(f"HTTP_DEBUG: Response text: {response.text}")
+        
+        
         data = response.json()
         status = data['errno'] == 0
         msg = data['msg']
@@ -201,8 +252,6 @@ if "enable_stream" not in st.session_state:
 if "enable_thinking" not in st.session_state:
     st.session_state.enable_thinking = False
 
-
-    
 # Function to clear conversation history
 def clear_conversation():
     st.session_state.messages = [
@@ -243,9 +292,19 @@ def add_new_mcp_server_handle():
             # Use ID directly from JSON config
             logging.info(f'User {st.session_state.user_id} adding new MCP server: {config_json}')
             server_id = list(config_json.keys())[0]
-            server_cmd = config_json[server_id]["command"]
-            server_args = config_json[server_id]["args"]
-            server_env = config_json[server_id].get('env')
+            server_conf = config_json[server_id]
+            
+            # Check if this is a remote server configuration
+            if "server_url" in server_conf:
+                # This is a remote server configuration - Note: data object doesn't exist here, this was a bug in original
+                server_url = server_conf["server_url"]
+                http_headers = server_conf.get("http_headers", {})
+                http_timeout = server_conf.get("http_timeout", 30)
+            else:
+                # This is a local server configuration
+                server_cmd = server_conf["command"]
+                server_args = server_conf["args"]
+                server_env = server_conf.get('env',{})
         except Exception as e:
             status, msg = False, "The config must be a valid JSON."
 
@@ -269,6 +328,7 @@ def add_new_mcp_server_handle():
         server_args = [x.strip() for x in server_args.split(' ') if x.strip()]
 
     logging.info(f'User {st.session_state.user_id} adding new MCP server: {server_id}:{server_name}')
+    logging.info(f"FRONTEND_DEBUG: Final values - server_id:{server_id}, server_cmd:{server_cmd}, server_args:{server_args}, config_json:{config_json}")
     
     with st.spinner('Add the server...'):
         status, msg = request_add_mcp_server(server_id, server_name, server_cmd, 
@@ -278,7 +338,6 @@ def add_new_mcp_server_handle():
 
     st.session_state.new_mcp_server_fd_status = status
     st.session_state.new_mcp_server_fd_msg = msg
-
 
 @st.dialog('MCP Server Configuration')
 def add_new_mcp_server():
@@ -332,11 +391,37 @@ def on_system_prompt_change():
         
 # UI
 with st.sidebar:
+    # ORIGINAL User ID Management (restored)
     col1, col2 = st.columns([3, 1])
     with col1:
         st.session_state.user_id = st.text_input('User ID', key='user_id_input',value=st.session_state.user_id,on_change=save_user_id, max_chars=32)
     with col2:
         st.button("🔄", on_click=generate_random_user_id, help="Generate random user ID")
+
+    # NEW: Cognito Information Display (if available) - FIXED: No nested expanders
+    if hasattr(st.session_state, 'cognito_user_info') and st.session_state.cognito_user_info:
+        st.markdown("---")
+        st.markdown("🔐 **Authenticated User:**")
+        if st.session_state.cognito_user_info.get('email'):
+            st.write(f"📧 {st.session_state.cognito_user_info.get('email')}")
+        if st.session_state.cognito_user_info.get('username'):
+            st.write(f"👤 {st.session_state.cognito_user_info.get('username')}")
+        if st.session_state.cognito_user_info.get('name'):
+            st.write(f"📝 {st.session_state.cognito_user_info.get('name')}")
+
+    # SEPARATE Debug Info Expander at root level (if needed)
+    if hasattr(st.session_state, 'alb_headers_status') or (hasattr(st.session_state, 'cognito_access_token') and st.session_state.cognito_access_token):
+        with st.expander("🔍 Debug Info", expanded=False):
+            if hasattr(st.session_state, 'cognito_access_token') and st.session_state.cognito_access_token:
+                token = st.session_state.cognito_access_token
+                st.write("**Cognito Access Token:**")
+                st.code(f"{token[:50]}...{token[-20:]}", language="text")
+                st.caption(f"Token length: {len(token)} characters")
+            
+            if hasattr(st.session_state, 'alb_headers_status'):
+                st.write("**ALB Headers:**")
+                for header, status in st.session_state.alb_headers_status.items():
+                    st.write(f"• `{header}`: {status}")
 
     llm_model_name = st.selectbox('Model List',
                                   list(st.session_state.model_names.keys()))
@@ -366,6 +451,7 @@ with st.sidebar:
         st.button("🗑️ Clear Context", on_click=clear_conversation, key="clear_button")
 
 st.title("💬 Bedrock Chatbot with MCP")
+st.caption("🔐 Authenticated via AWS Cognito")
 
 # Display chat messages
 for msg in st.session_state.messages:
