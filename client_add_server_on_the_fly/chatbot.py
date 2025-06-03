@@ -30,7 +30,6 @@ API_KEY = os.environ.get("API_KEY")
 logging.basicConfig(level=logging.INFO)
 mcp_base_url = os.environ.get('MCP_BASE_URL')
 mcp_command_list = ["uvx", "npx", "node", "python","docker","uv"]
-COOKIE_NAME = "mcp_chat_user_id"
 local_storage = LocalStorage()
 
 # Phase 4: Production-Ready Enhancements (Simplified Validation)
@@ -218,38 +217,20 @@ try:
 except Exception:
     commit_id = 'unknown'
 
-# User session management (ORIGINAL)
-def initialize_user_session():
-    """Initialize user session, ensuring each user has a unique identifier"""    
-    # Cleanup on initialization
-    cleanup_session_state()
+# NEW: Function to get ALB user info
+def get_alb_user_info():
+    """Extract ALB user information from environment or headers"""
+    # In actual ALB deployment, these would come from ALB headers
+    # For now, simulate with environment variables for testing
+    user_identity = os.environ.get('ALB_USER_IDENTITY')
+    user_data = os.environ.get('ALB_USER_DATA')
     
-    # Try to get user ID from cookie
-    if "user_id" not in st.session_state:
-        if local_storage and local_storage.getItem(COOKIE_NAME):
-            st.session_state.user_id = local_storage.getItem(COOKIE_NAME)
-            logging.info(f"Retrieved user ID: {st.session_state.user_id}")
-            return
-        else:
-            # Generate new user ID
-            st.session_state.user_id = str(uuid.uuid4())[:8]
-            # Save to LocalStorage
-            local_storage.setItem(COOKIE_NAME, st.session_state.user_id)
-    
-# Function to generate random user ID (ORIGINAL)
-def generate_random_user_id():
-    st.session_state.user_id = str(uuid.uuid4())[:8]
-    # Update cookie
-    local_storage.setItem(COOKIE_NAME, st.session_state.user_id)
-    logging.info(f"Generated new random user ID: {st.session_state.user_id}")
-    
-# Save to cookie when user manually changes ID (ORIGINAL) - Simplified
-def save_user_id():
-    st.session_state.user_id = st.session_state.user_id_input
-    local_storage.setItem(COOKIE_NAME, st.session_state.user_id)
-    logging.info(f"Saved user ID: {st.session_state.user_id}")
-
-initialize_user_session()
+    if user_identity and user_data:
+        return {
+            'user_identity': user_identity,
+            'user_data': user_data
+        }
+    return None
 
 # Phase 3: Advanced Chat Processing Functions (Enhanced with Phase 4)
 
@@ -521,14 +502,24 @@ def display_streaming_stats(progress):
             st.metric("Errors", stats["error_count"], delta=stats["error_count"])
         else:
             st.metric("Status", "✅ Good")
-    
+
 def get_auth_headers():
-    """Build authentication headers containing user identity - ORIGINAL"""
+    """Build authentication headers containing user identity"""
     headers = {
         'Authorization': f'Bearer {API_KEY}',
-        'X-User-ID': st.session_state.user_id  # Uses original 8-char user ID
+        'X-User-ID': 'unknown'  # Keep as fallback
     }
     return headers
+
+# NEW: Function to build query parameters with ALB info
+def get_query_params():
+    """Build query parameters with ALB user info"""
+    params = {}
+    alb_info = get_alb_user_info()
+    if alb_info:
+        params['user_identity'] = alb_info['user_identity']
+        params['user_data'] = alb_info['user_data']
+    return params
 
 @safe_api_call
 @performance_monitor
@@ -542,7 +533,7 @@ def request_list_models():
     url = mcp_base_url.rstrip('/') + '/v1/list/models'
     models = []
     try:
-        response = requests.get(url, headers=get_auth_headers(), timeout=10)
+        response = requests.get(url, headers=get_auth_headers(), params=get_query_params(), timeout=10)
         response.raise_for_status()
         data = response.json()
         models = data.get('models', [])
@@ -564,7 +555,7 @@ def request_list_mcp_servers():
     url = mcp_base_url.rstrip('/') + '/v1/list/mcp_server'
     mcp_servers = []
     try:
-        response = requests.get(url, headers=get_auth_headers(), timeout=10)
+        response = requests.get(url, headers=get_auth_headers(), params=get_query_params(), timeout=10)
         response.raise_for_status()
         data = response.json()
         mcp_servers = data.get('servers', [])
@@ -573,6 +564,20 @@ def request_list_mcp_servers():
         logging.error('request list mcp servers error: %s' % e)
         raise
     return mcp_servers
+
+# NEW: Function to get user info from backend
+@safe_api_call
+@performance_monitor
+def request_user_info():
+    """Get user information from backend"""
+    url = mcp_base_url.rstrip('/') + '/v1/user/info'
+    try:
+        response = requests.get(url, headers=get_auth_headers(), params=get_query_params(), timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logging.error('request user info error: %s' % e)
+        return None
 
 @safe_api_call
 @performance_monitor
@@ -586,7 +591,7 @@ def request_list_mcp_server_config(mcp_server_id: str):
     url = mcp_base_url.rstrip('/') + '/v1/list/mcp_server_config/' + mcp_server_id
     server_config = {}
     try:
-        response = requests.get(url, headers=get_auth_headers(), timeout=10)
+        response = requests.get(url, headers=get_auth_headers(), params=get_query_params(), timeout=10)
         response.raise_for_status()
         data = response.json()
         server_config = data.get('server_config', {})
@@ -608,7 +613,7 @@ def request_list_mcp_server_tools(mcp_server_id: str):
     url = mcp_base_url.rstrip('/') + '/v1/list/mcp_server_tools/' + mcp_server_id
     tools_config = {}
     try:
-        response = requests.get(url, headers=get_auth_headers(), timeout=15)
+        response = requests.get(url, headers=get_auth_headers(), params=get_query_params(), timeout=15)
         response.raise_for_status()
         data = response.json()
         tools_config = data.get('tools_config', {})
@@ -626,7 +631,7 @@ def request_delete_mcp_server(server_id):
     url = mcp_base_url.rstrip('/') + f'/v1/remove/mcp_server/{server_id}'
     status = False
     try:
-        response = requests.delete(url, headers=get_auth_headers(), timeout=15)
+        response = requests.delete(url, headers=get_auth_headers(), params=get_query_params(), timeout=15)
         response.raise_for_status()
         data = response.json()
         status = data['errno'] == 0
@@ -662,7 +667,7 @@ def request_add_mcp_server(server_id, server_name, command, args=[], env=None, c
         if env:
             payload["env"] = env
             
-        response = requests.post(url, json=payload, headers=get_auth_headers(), timeout=30)
+        response = requests.post(url, json=payload, headers=get_auth_headers(), params=get_query_params(), timeout=30)
         response.raise_for_status()
         data = response.json()
         status = data['errno'] == 0
@@ -743,18 +748,18 @@ def request_chat(messages, model_id, mcp_server_ids, stream=False, max_tokens=10
             'temperature': temperature,
             'max_tokens': max_tokens
         }
-        logging.info(f'User {st.session_state.user_id} request payload: %s' % payload)
+        logging.info(f'Request payload: %s' % payload)
         
         if stream:
             # Streaming request
             headers = get_auth_headers()
             headers['Accept'] = 'text/event-stream'  
-            response = requests.post(url, json=payload, stream=True, headers=headers, timeout=60)
+            response = requests.post(url, json=payload, stream=True, headers=headers, params=get_query_params(), timeout=60)
             response.raise_for_status()
             return response, {}
         else:
             # Regular request
-            response = requests.post(url, json=payload, headers=get_auth_headers(), timeout=60)
+            response = requests.post(url, json=payload, headers=get_auth_headers(), params=get_query_params(), timeout=60)
             response.raise_for_status()
             data = response.json()
             msg = data['choices'][0]['message']['content']
@@ -762,19 +767,19 @@ def request_chat(messages, model_id, mcp_server_ids, stream=False, max_tokens=10
 
     except requests.exceptions.Timeout:
         msg = '⏱️ **Request Timeout**: The request took too long. Try reducing max tokens or simplifying your request.'
-        logging.error(f'User {st.session_state.user_id} chat request timeout')
+        logging.error('Chat request timeout')
         raise
     except requests.exceptions.HTTPError as e:
         status_code = e.response.status_code if e.response else 'Unknown'
         msg = f'🚨 **Server Error** ({status_code}): The server encountered an error. Please try again.'
-        logging.error(f'User {st.session_state.user_id} chat request HTTP error: {e}')
+        logging.error(f'Chat request HTTP error: {e}')
         raise
     except Exception as e:
         msg = f'❌ **Unexpected Error**: {str(e)}'
-        logging.error(f'User {st.session_state.user_id} chat request error: %s' % e)
+        logging.error(f'Chat request error: %s' % e)
         raise
     
-    logging.info(f'User {st.session_state.user_id} response message: %s' % msg)
+    logging.info(f'Response message: %s' % msg)
     return msg, msg_extras
 
 # Initialize session state with enhanced error handling
@@ -859,7 +864,7 @@ def delete_mcp_server_handle():
         server_name = st.session_state.server_to_delete
         server_id = st.session_state.mcp_servers[server_name]
         
-        logging.info(f'User {st.session_state.user_id} deleting MCP server: {server_id}:{server_name}')
+        logging.info(f'Deleting MCP server: {server_id}:{server_name}')
         
         try:
             with st.spinner('Deleting the server...'):
@@ -977,7 +982,7 @@ def add_new_mcp_server_handle():
         if isinstance(server_args, str):
             server_args = [x.strip() for x in server_args.split(' ') if x.strip()]
 
-        logging.info(f'User {st.session_state.user_id} adding new MCP server: {server_id}:{server_name}')
+        logging.info(f'Adding new MCP server: {server_id}:{server_name}')
         
         # Make API call
         with st.spinner('Adding the server...'):
@@ -1233,19 +1238,32 @@ def on_system_prompt_change():
         
 # UI
 with st.sidebar:
-    # User ID Management - simplified
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.session_state.user_id = st.text_input('User ID', 
-                                                key='user_id_input',
-                                                value=st.session_state.user_id,
-                                                on_change=save_user_id, 
-                                                max_chars=32,
-                                                help="Your unique identifier for this session")
-    with col2:
-        st.button("🔄", 
-                 on_click=generate_random_user_id, 
-                 help="Generate random user ID")
+    # NEW: User info display (replaces old editable user ID section)
+    st.markdown("### 👤 User Information")
+    try:
+        user_info = request_user_info()
+        if user_info:
+            if user_info.get('email'):
+                st.markdown(f"**Email:** {user_info['email']}")
+            if user_info.get('username'):
+                st.markdown(f"**Username:** {user_info['username']}")
+            if user_info.get('user_id'):
+                st.markdown(f"**User ID:** `{user_info['user_id'][:12]}...`")
+            if user_info.get('session_id'):
+                st.markdown(f"**Session:** `{user_info['session_id'][:8]}...`")
+            if user_info.get('groups'):
+                st.markdown(f"**Groups:** {', '.join(user_info['groups'])}")
+        else:
+            # Fallback to show basic info
+            alb_info = get_alb_user_info()
+            if alb_info:
+                st.markdown(f"**ALB User:** {alb_info['user_identity'][:20]}...")
+            else:
+                st.markdown("**Mode:** Local Development")
+    except Exception as e:
+        st.error(f"Unable to load user info: {str(e)}")
+        
+    st.markdown("---")
 
     # Model Selection
     if st.session_state.model_names:

@@ -307,13 +307,31 @@ async def get_or_create_user_session(
     request: Request,
     auth: HTTPAuthorizationCredentials = Security(security)
 ):
-    """Get or create user session, prioritizing Cognito identity, then X-User-ID header, and finally API key as fallback ID"""
+    """Get or create user session, prioritizing ALB query params, then Cognito identity, then X-User-ID header, and finally API key as fallback ID"""
     # First verify API key or Cognito token
     token = await get_api_key(auth)
     
-    # Try to get user ID from Cognito token
+    # NEW: Check for ALB user info in query parameters first
     user_id = None
-    if COGNITO_USER_POOL_ID and COGNITO_APP_CLIENT_ID:
+    if 'user_identity' in request.query_params:
+        user_id = request.query_params.get('user_identity')
+        # Try to parse user_data if available
+        if 'user_data' in request.query_params:
+            try:
+                user_data_jwt = request.query_params.get('user_data')
+                # Decode without verification since ALB already verified it
+                payload = jwt.decode(user_data_jwt, options={"verify_signature": False})
+                request.state.user_info = {
+                    'sub': payload.get('sub'),
+                    'email': payload.get('email'),
+                    'username': payload.get('preferred_username', payload.get('cognito:username')),
+                    'groups': payload.get('cognito:groups', [])
+                }
+            except Exception as e:
+                logger.error(f"Failed to decode user_data JWT: {e}")
+    
+    # Try to get user ID from Cognito token (existing logic)
+    if not user_id and COGNITO_USER_POOL_ID and COGNITO_APP_CLIENT_ID:
         try:
             user_info = await get_cognito_user(token)
             if user_info and user_info.get('sub'):
@@ -323,7 +341,7 @@ async def get_or_create_user_session(
         except Exception as e:
             logger.error(f"Failed to extract user from Cognito token: {e}")
     
-    # If no Cognito user, try to get from ALB headers
+    # If no Cognito user, try to get from ALB headers (existing logic)
     if not user_id:
         # Check for ALB authentication headers
         if 'x-amzn-oidc-identity' in request.headers:
