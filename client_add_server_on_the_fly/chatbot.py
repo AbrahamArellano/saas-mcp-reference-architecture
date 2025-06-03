@@ -217,19 +217,21 @@ try:
 except Exception:
     commit_id = 'unknown'
 
-# NEW: Function to get ALB user info
+# MODIFIED: Function to get ALB user info using real headers
 def get_alb_user_info():
-    """Extract ALB user information from environment or headers"""
-    # In actual ALB deployment, these would come from ALB headers
-    # For now, simulate with environment variables for testing
-    user_identity = os.environ.get('ALB_USER_IDENTITY')
-    user_data = os.environ.get('ALB_USER_DATA')
+    """Extract ALB user information from real ALB headers"""
+    try:
+        user_identity = st.context.headers.get("x-amzn-oidc-identity")
+        user_data = st.context.headers.get("x-amzn-oidc-data")
+        
+        if user_identity and user_data:
+            return {
+                'user_identity': user_identity,
+                'user_data': user_data
+            }
+    except Exception as e:
+        logging.error(f"Error extracting ALB headers: {e}")
     
-    if user_identity and user_data:
-        return {
-            'user_identity': user_identity,
-            'user_data': user_data
-        }
     return None
 
 # Phase 3: Advanced Chat Processing Functions (Enhanced with Phase 4)
@@ -503,23 +505,43 @@ def display_streaming_stats(progress):
         else:
             st.metric("Status", "✅ Good")
 
+# MODIFIED: Updated auth headers to forward ALB headers to backend
 def get_auth_headers():
-    """Build authentication headers containing user identity"""
+    """Build authentication headers and forward ALB data"""
     headers = {
         'Authorization': f'Bearer {API_KEY}',
         'X-User-ID': 'unknown'  # Keep as fallback
     }
+    
+    # Forward ALB headers if available
+    try:
+        user_identity = st.context.headers.get("x-amzn-oidc-identity")
+        oidc_data = st.context.headers.get("x-amzn-oidc-data")
+        
+        if user_identity:
+            headers['x-amzn-oidc-identity'] = user_identity
+        
+        if oidc_data:
+            headers['x-amzn-oidc-data'] = oidc_data
+            
+    except Exception as e:
+        logging.error(f"Error forwarding ALB headers: {e}")
+    
     return headers
 
-# NEW: Function to build query parameters with ALB info
-def get_query_params():
-    """Build query parameters with ALB user info"""
-    params = {}
-    alb_info = get_alb_user_info()
-    if alb_info:
-        params['user_identity'] = alb_info['user_identity']
-        params['user_data'] = alb_info['user_data']
-    return params
+# NEW: Function to get user info from backend
+@safe_api_call
+@performance_monitor
+def request_user_info():
+    """Get user information from backend"""
+    url = mcp_base_url.rstrip('/') + '/v1/user/info'
+    try:
+        response = requests.get(url, headers=get_auth_headers(), timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logging.error('request user info error: %s' % e)
+        return None
 
 @safe_api_call
 @performance_monitor
@@ -533,7 +555,7 @@ def request_list_models():
     url = mcp_base_url.rstrip('/') + '/v1/list/models'
     models = []
     try:
-        response = requests.get(url, headers=get_auth_headers(), params=get_query_params(), timeout=10)
+        response = requests.get(url, headers=get_auth_headers(), timeout=10)
         response.raise_for_status()
         data = response.json()
         models = data.get('models', [])
@@ -555,7 +577,7 @@ def request_list_mcp_servers():
     url = mcp_base_url.rstrip('/') + '/v1/list/mcp_server'
     mcp_servers = []
     try:
-        response = requests.get(url, headers=get_auth_headers(), params=get_query_params(), timeout=10)
+        response = requests.get(url, headers=get_auth_headers(), timeout=10)
         response.raise_for_status()
         data = response.json()
         mcp_servers = data.get('servers', [])
@@ -564,20 +586,6 @@ def request_list_mcp_servers():
         logging.error('request list mcp servers error: %s' % e)
         raise
     return mcp_servers
-
-# NEW: Function to get user info from backend
-@safe_api_call
-@performance_monitor
-def request_user_info():
-    """Get user information from backend"""
-    url = mcp_base_url.rstrip('/') + '/v1/user/info'
-    try:
-        response = requests.get(url, headers=get_auth_headers(), params=get_query_params(), timeout=10)
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        logging.error('request user info error: %s' % e)
-        return None
 
 @safe_api_call
 @performance_monitor
@@ -591,7 +599,7 @@ def request_list_mcp_server_config(mcp_server_id: str):
     url = mcp_base_url.rstrip('/') + '/v1/list/mcp_server_config/' + mcp_server_id
     server_config = {}
     try:
-        response = requests.get(url, headers=get_auth_headers(), params=get_query_params(), timeout=10)
+        response = requests.get(url, headers=get_auth_headers(), timeout=10)
         response.raise_for_status()
         data = response.json()
         server_config = data.get('server_config', {})
@@ -613,7 +621,7 @@ def request_list_mcp_server_tools(mcp_server_id: str):
     url = mcp_base_url.rstrip('/') + '/v1/list/mcp_server_tools/' + mcp_server_id
     tools_config = {}
     try:
-        response = requests.get(url, headers=get_auth_headers(), params=get_query_params(), timeout=15)
+        response = requests.get(url, headers=get_auth_headers(), timeout=15)
         response.raise_for_status()
         data = response.json()
         tools_config = data.get('tools_config', {})
@@ -631,7 +639,7 @@ def request_delete_mcp_server(server_id):
     url = mcp_base_url.rstrip('/') + f'/v1/remove/mcp_server/{server_id}'
     status = False
     try:
-        response = requests.delete(url, headers=get_auth_headers(), params=get_query_params(), timeout=15)
+        response = requests.delete(url, headers=get_auth_headers(), timeout=15)
         response.raise_for_status()
         data = response.json()
         status = data['errno'] == 0
@@ -667,7 +675,7 @@ def request_add_mcp_server(server_id, server_name, command, args=[], env=None, c
         if env:
             payload["env"] = env
             
-        response = requests.post(url, json=payload, headers=get_auth_headers(), params=get_query_params(), timeout=30)
+        response = requests.post(url, json=payload, headers=get_auth_headers(), timeout=30)
         response.raise_for_status()
         data = response.json()
         status = data['errno'] == 0
@@ -754,12 +762,12 @@ def request_chat(messages, model_id, mcp_server_ids, stream=False, max_tokens=10
             # Streaming request
             headers = get_auth_headers()
             headers['Accept'] = 'text/event-stream'  
-            response = requests.post(url, json=payload, stream=True, headers=headers, params=get_query_params(), timeout=60)
+            response = requests.post(url, json=payload, stream=True, headers=headers, timeout=60)
             response.raise_for_status()
             return response, {}
         else:
             # Regular request
-            response = requests.post(url, json=payload, headers=get_auth_headers(), params=get_query_params(), timeout=60)
+            response = requests.post(url, json=payload, headers=get_auth_headers(), timeout=60)
             response.raise_for_status()
             data = response.json()
             msg = data['choices'][0]['message']['content']
