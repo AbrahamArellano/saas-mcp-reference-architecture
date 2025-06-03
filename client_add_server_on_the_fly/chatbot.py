@@ -1238,32 +1238,33 @@ def on_system_prompt_change():
         
 # UI
 with st.sidebar:
-    # NEW: User info display (replaces old editable user ID section)
-    st.markdown("### 👤 User Information")
-    try:
-        user_info = request_user_info()
-        if user_info:
-            if user_info.get('email'):
-                st.markdown(f"**Email:** {user_info['email']}")
-            if user_info.get('username'):
-                st.markdown(f"**Username:** {user_info['username']}")
-            if user_info.get('user_id'):
-                st.markdown(f"**User ID:** `{user_info['user_id'][:12]}...`")
-            if user_info.get('session_id'):
-                st.markdown(f"**Session:** `{user_info['session_id'][:8]}...`")
-            if user_info.get('groups'):
-                st.markdown(f"**Groups:** {', '.join(user_info['groups'])}")
-        else:
-            # Fallback to show basic info
-            alb_info = get_alb_user_info()
-            if alb_info:
-                st.markdown(f"**ALB User:** {alb_info['user_identity'][:20]}...")
+    # User info display in collapsible format
+    with st.expander("👤 User Information", expanded=False):
+        try:
+            user_info = request_user_info()
+            if user_info:
+                if user_info.get('email'):
+                    st.markdown(f"📧 **Email:** {user_info['email']}")
+                if user_info.get('username'):
+                    st.markdown(f"👤 **Username:** {user_info['username']}")
+                if user_info.get('user_id'):
+                    st.markdown(f"🆔 **User ID:** `{user_info['user_id'][:12]}...`")
+                if user_info.get('session_id'):
+                    st.markdown(f"🔗 **Session:** `{user_info['session_id'][:8]}...`")
+                if user_info.get('groups'):
+                    st.markdown(f"👥 **Groups:** {', '.join(user_info['groups'])}")
+                
+                if not any([user_info.get('email'), user_info.get('username'), user_info.get('groups')]):
+                    st.info("Using fallback authentication")
             else:
-                st.markdown("**Mode:** Local Development")
-    except Exception as e:
-        st.error(f"Unable to load user info: {str(e)}")
-        
-    st.markdown("---")
+                # Fallback to show basic info
+                alb_info = get_alb_user_info()
+                if alb_info:
+                    st.markdown(f"🔐 **ALB User:** {alb_info['user_identity'][:20]}...")
+                else:
+                    st.markdown("🔧 **Mode:** Local Development")
+        except Exception as e:
+            st.error(f"Unable to load user info: {str(e)}")
 
     # Model Selection
     if st.session_state.model_names:
