@@ -3,7 +3,7 @@ import { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { getDynamoDbClient, TABLE_NAME } from "../services/dynamoDb";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { FlightBooking, Passenger } from "../types/booking";
-import httpContext from "express-http-context";
+import { AuthInfo } from "../types/authInfo";
 
 export interface FlightInfo {
   departure: Date;
@@ -142,19 +142,20 @@ export async function listFlights({
   };
 }
 
-export async function bookFlight({
-  flightNumber,
-  departure,
-  flightClass,
-  frequentFlyerNumber,
-}: {
-  flightNumber: string;
-  departure: Date;
-  flightClass: string;
-  frequentFlyerNumber?: string;
-}) {
-  const tenantId = httpContext.get("tenantId");
-
+export async function bookFlight(
+  {
+    flightNumber,
+    departure,
+    flightClass,
+    frequentFlyerNumber,
+  }: {
+    flightNumber: string;
+    departure: Date;
+    flightClass: string;
+    frequentFlyerNumber?: string;
+  },
+  { authInfo: { tenantId } }: AuthInfo
+) {
   // await new Promise((resolve) => setTimeout(resolve, 1000));
 
   const scenario = 1; //faker.number.int({ min: 1, max: 3 });

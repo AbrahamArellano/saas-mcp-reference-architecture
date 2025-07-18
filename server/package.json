@@ -1,6 +1,6 @@
 {
   "type": "module",
-  "version": "0.0.31",
+  "version": "0.0.34",
   "author": "Anton Aleksandrov",
   "license": "Apache-2.0",
   "description": "A sample stateless MCP Server running on ECS Fargate",
@@ -13,7 +13,6 @@
     "@modelcontextprotocol/sdk": "^1.11.0",
     "cors": "^2.8.5",
     "express": "^5.1.0",
-    "express-http-context": "^2.0.1",
     "jsonwebtoken": "^9.0.2",
     "log4js": "^6.9.1",
     "typescript": "^5.8.3"

@@ -1,20 +1,32 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib';
-import { InfraStack } from '../lib/infra-stack';
+import { ServicesStack } from '../lib/services-stack';
+import { ApplicationStack } from '../lib/application-stack';
 
 const app = new cdk.App();
-new InfraStack(app, 'InfraStack', {
-  /* If you don't specify 'env', this stack will be environment-agnostic.
-   * Account/Region-dependent features and context lookups will not work,
-   * but a single synthesized template can be deployed anywhere. */
 
-  /* Uncomment the next line to specialize this stack for the AWS Account
-   * and Region that are implied by the current CLI configuration. */
-  // env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
+// Define the environment for both stacks
+const env = { 
+  account: process.env.CDK_DEFAULT_ACCOUNT || process.env.AWS_ACCOUNT_ID, 
+  region: process.env.CDK_DEFAULT_REGION || process.env.AWS_REGION || 'us-east-1'
+};
 
-  /* Uncomment the next line if you know exactly what Account and Region you
-   * want to deploy the stack to. */
-  // env: { account: '123456789012', region: 'us-east-1' },
-
-  /* For more information, see https://docs.aws.amazon.com/cdk/latest/guide/environments.html */
+// Create the services stack first
+const mcpServerServicesStack = new ServicesStack(app, 'MCPServerServicesStack', {
+  /* Use the same environment for both stacks */
+  env: env
 });
+
+// Create the application stack, passing in the resources from the services stack
+const mcpServerApplicationStack = new ApplicationStack(app, 'MCPServerApplicationStack', {
+  mcpServerTravelBookingsTable: mcpServerServicesStack.mcpServerTravelBookingsTable,
+  mcpServerPolicyBucket: mcpServerServicesStack.mcpServerPolicyBucket,
+  mcpServerTaskRole: mcpServerServicesStack.mcpServerTaskRole,
+  mcpServerDynamoDbAccessRole: mcpServerServicesStack.mcpServerDynamoDbAccessRole,
+  
+  /* Use the same environment as the services stack */
+  env: env
+});
+
+// Add a dependency to ensure the services stack is created first
+mcpServerApplicationStack.addDependency(mcpServerServicesStack);

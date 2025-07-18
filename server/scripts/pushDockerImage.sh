@@ -1,21 +1,109 @@
 #!/bin/bash
-export ECR_REPO=stateless-mcp-on-ecs
+
+# Default values
+export ECR_REPO=mcp-server-on-ecs
 export ECR_IMAGE_TAG=latest
 export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
-export ECR_REPO_URI=$AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/$ECR_REPO:$ECR_IMAGE_TAG
+export AWS_REGION=${AWS_REGION:-us-east-1}
+export ECR_REPO_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$ECR_IMAGE_TAG
 
-echo Logging in...
-aws ecr get-login-password --region us-east-1 | finch login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com
+# Function to check if a command exists
+command_exists() {
+  command -v "$1" &> /dev/null
+}
 
-echo Incrementing app version...
-# cd src/js/mcpserver
+# Detect available container tools
+DOCKER_AVAILABLE=false
+FINCH_AVAILABLE=false
+
+if command_exists docker; then
+  DOCKER_AVAILABLE=true
+fi
+
+if command_exists finch; then
+  FINCH_AVAILABLE=true
+fi
+
+# Check if the ECR repository exists
+echo "Checking if ECR repository '$ECR_REPO' exists..."
+REPO_EXISTS=false
+if aws ecr describe-repositories --repository-names $ECR_REPO --region $AWS_REGION &> /dev/null; then
+  REPO_EXISTS=true
+  echo "ECR repository '$ECR_REPO' exists."
+  read -p "Do you want to use the existing repository? (y/n) " -n 1 -r
+  echo
+  if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    echo "Exiting. Please use a different repository name or confirm using the existing one."
+    exit 1
+  fi
+else
+  echo "ECR repository '$ECR_REPO' does not exist. Will create it."
+fi
+
+# Select container tool
+CONTAINER_TOOL=""
+
+if [ "$DOCKER_AVAILABLE" = true ] && [ "$FINCH_AVAILABLE" = true ]; then
+  echo "Both Docker and Finch are available."
+  read -p "Which tool do you want to use? (docker/finch) " TOOL_CHOICE
+  if [[ $TOOL_CHOICE == "docker" ]]; then
+    CONTAINER_TOOL="docker"
+  elif [[ $TOOL_CHOICE == "finch" ]]; then
+    CONTAINER_TOOL="finch"
+  else
+    echo "Invalid choice. Exiting."
+    exit 1
+  fi
+elif [ "$DOCKER_AVAILABLE" = true ]; then
+  CONTAINER_TOOL="docker"
+  echo "Using Docker for container operations."
+elif [ "$FINCH_AVAILABLE" = true ]; then
+  CONTAINER_TOOL="finch"
+  echo "Using Finch for container operations."
+else
+  echo "Neither Docker nor Finch is available. Please install one of them and try again."
+  exit 1
+fi
+
+# Increment app version
+echo "Incrementing app version..."
 npm version patch
 
-echo $ECR_REPO_URI
+# Create repository if it doesn't exist
+if [ "$REPO_EXISTS" = false ]; then
+  echo "Creating ECR repository..."
+  aws ecr create-repository --repository-name $ECR_REPO --region $AWS_REGION --no-cli-pager
+fi
 
-echo Building image and publishing to private ECR...
-aws ecr create-repository --repository-name $ECR_REPO --no-cli-pager
-finch build --platform linux/amd64 --provenance=false -t $ECR_REPO_URI .
-finch push $ECR_REPO_URI --platform linux/amd64
+# Login to ECR
+echo "Logging in to ECR..."
+if [ "$CONTAINER_TOOL" = "docker" ]; then
+  aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+else
+  aws ecr get-login-password --region $AWS_REGION | finch login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+fi
 
-echo All done!
+# Build and push image
+echo "Building MCP Server image for $ECR_REPO_URI..."
+
+# Check if running in SageMaker environment
+if [[ "$HOME" == *"sagemaker-user"* ]]; then
+  NETWORK_OPTION="--network sagemaker"
+  echo "Detected SageMaker environment, using network option: $NETWORK_OPTION"
+else
+  NETWORK_OPTION=""
+fi
+
+if [ "$CONTAINER_TOOL" = "docker" ]; then
+  docker build --platform linux/amd64 $NETWORK_OPTION -t $ECR_REPO_URI .
+  
+  echo "Pushing MCP Server image to ECR..."
+  docker push $ECR_REPO_URI
+else
+  finch build --platform linux/amd64 $NETWORK_OPTION --provenance=false -t $ECR_REPO_URI .
+  
+  echo "Pushing MCP Server image to ECR..."
+  finch push $ECR_REPO_URI --platform linux/amd64
+fi
+
+echo "MCP Server image successfully pushed to $ECR_REPO_URI"

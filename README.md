@@ -2,42 +2,134 @@
 
 This repository contains an MCP server using the Streamable HTTP transport written with the Typescript SDK, that can be deployed to Amazon ECS. The repository also contains two client implementations that leverage Streamlit and communicate with Amazon Bedrock, support remote MCP servers and can be hosted on AWS.
 
-> [CAUTION]
-> Not all components have been merged or cleaned yet. We will provide the updated and infrastructure as code in the next couple of days.
-
-## Overall architecture
+## Overall Architecture
 
 ![Architecture Overview](/resources/mcp_hackathon.png)
 
-## Live demos and related resources
+## MCP Server development and deployment
 
-1. [Remote MCP Server for a B2B Travel booking agent](https://amazon.awsapps.com/workdocs-amazon/index.html#/document/25f60b0412d3e7e55b33eb6207b3177136b7a07db9fe90be025fd4302e2a897b) 
-2. Bedrock powered MCP clients with UI hosted on AWS + CLI with remote server support ([Live Demo Client 1](https://amazon.awsapps.com/workdocs-amazon/index.html#/document/b431ce7582b2ff212adc04b66bcb9f9adc3aeef638c29a2d60e69e56b6cbfc9e) / [Client 2](https://amazon.awsapps.com/workdocs-amazon/index.html#/document/4e0f90886d542843bc95313204f40ba5879a17078eaed2544e1ce8f378f02ee6) / [Python Client](https://amazon.awsapps.com/workdocs-amazon/index.html#/document/9c61d036d576a9ec4a30be0b80d7af96fff8f80a9c3fd2a9f920fea22b5f0a28))
-3. [Business narrative for internal and customer facing MCP/Agent enablement](https://quip-amazon.com/wjUNA49v3guV/MCP-Business-Working-Group)
-4. [MCP enablement session run by AWS Anthropic SA @nsmagt](https://broadcast.amazon.com/videos/1538819)
+This repository is organized into several key components for MCP server development and deployment:
 
-## Structure
+### MCP Server development
 
-- The `infra` folder contains a CDK project that deploys the application to ECS. The stack deploys a load-balanced Fargate service running the server behind an ALB (supplied with a **preexisting certificate**). 
+- [Server README](./server/README.md)
 
-  The application data is stored in a DynamoDB table and an S3 bucket for policy document storage. We showcase tenant-isolation capabilities using STS session tagging and the `leadingKeys` condition.
+The `server` folder contains the core MCP server implementation:
+
+- **Core Components**: 
+  - `index.js` - Main entry point with authentication logic
+  - `mcp-server.js` - MCP server implementation and tool/resource registration
   
-  > [!CAUTION]
-  > The stack expects an existing TLS certificate as well as an existing container image. You will also need to add the DNS records by hand.
+- **MCP Components**:
+  - `resources/` - MCP resources implementation
+  - `tools/` - MCP tools implementation
+  
+- **Supporting Code**:
+  - `services/` - Internal services for the MCP server
+  - `types/` - TypeScript type definitions
+  
+- **Development Scripts**:
+  - `pushDockerImage.sh` - Builds and pushes the container image to a private ECR repository using Docker or Finch
+  - `createToken.js` - Creates JWT tokens for testing
 
-- The `server` folder contains the MCP server. The `resources` and `tools` folders contain their MCP counterparts, while `services` and `types` contain project-internal code. Authentication can be found in `index.js` and the registration of tools and resources in `mcp-server.js`.
+### MCP Server deployment
 
-  The `scripts/` directory contain some handy scripts for development:
-    - `pushDockerImage.sh` builds and pushes the container image to a private ECR using your default credentials. Because of the company policy against Docker Desktop, it is currently using finch.
-    - `createToken.js` can be used to create JWTs for testing.
+- [Infrastructure README](./infra/README.md)
+
+The `infra` folder contains a CDK project that deploys the MCP server to ECS using a split stack architecture:
+
+- **MCPServerServicesStack**: Contains the foundational resources (DynamoDB, S3, IAM)
+- **MCPServerApplicationStack**: Contains the application resources (ECS, ALB, VPC)
+
+#### Deployment Workflow
+
+The infrastructure is split into two stacks to facilitate local development and deployment:
+
+1. Deploy the services stack for local development
+2. Build and push the container image to ECR
+3. Deploy the application stack
+
+For detailed deployment instructions and options, please refer to the [Infrastructure README](./infra/README.md).
+
+### MCP Server Security Features
+
+The MCP server implementation includes several security features:
+
+1. **Multi-tenant Data Isolation**:
+   - Uses STS session tagging for tenant context
+   - DynamoDB access control using the `dynamodb:LeadingKeys` condition
+   - Role-based access control for administrative functions
+
+2. **Authentication**:
+   - JWT-based authentication for API access
+   - Token validation and tenant identification
+
+3. **Network Security**:
+   - Optional HTTPS support with TLS certificates
+   - Load balancer with health checks
+
+### MCP Server Customization and Extension
+
+The MCP server can be extended with additional tools and resources:
+
+1. Add new MCP tools in the `server/tools` directory
+2. Add new MCP resources in the `server/resources` directory
+3. Register them in `mcp-server.js`
+
+
+## MCP Client Implementations
+
+This repository includes three different MCP client implementations, each showcasing different approaches to integrating with MCP servers:
+
+### Production-Ready Client with Dynamic Server Management
+
+- [Client README](./client_add_server_on_the_fly/README.md)
+
+The `client_add_server_on_the_fly` folder contains a production-ready MCP client with comprehensive features for enterprise deployment:
+
+- **Architecture**: Built with Streamlit frontend and FastAPI backend
+- **Security**: AWS Cognito authentication with infrastructure-level security
+- **Deployment**: ECS Fargate deployment with Application Load Balancer
+- **Features**:
+  - Dynamic MCP server management (add/remove at runtime)
+  - Enterprise-grade authentication
+  - Direct integration with Amazon Bedrock models
+  - Professional UI with conversation history
+
+This implementation is ideal for production deployments requiring robust security and user management.
+
+### Lightweight Python Client with Model Integration
+
+The `mcp-client-with-model` folder contains a lightweight Python implementation that demonstrates direct integration between MCP and language models:
+
+- **Architecture**: Pure Python implementation with HTTP streaming support
+- **Features**:
+  - Direct integration with language models
+  - Streaming support for real-time responses
+  - Simple API for tool registration and execution
+
+This implementation is ideal for developers looking to understand the core mechanics of MCP integration with models.
+
+### Strands Agents Integration
+
+- [Strands Agents README](./strands-agents-mcp/README.md)
+
+The `strands-agents-mcp` folder demonstrates integration between MCP and the Strands Agents framework:
+
+- **Architecture**: Python-based integration between Strands Agents and MCP
+- **Features**:
+  - Bridging Strands Agents capabilities with MCP tools
+  - Simple implementation requiring minimal setup
+  - Example of framework interoperability
+
+This implementation requires Python 3.10+ and may require manual installation of the Strands package as described in its README.
 
 ## Testing with Claude Desktop
 
-This project is deployed under https://mcp.fredscho.people.aws.dev. If you want to test the project using Claude Destop, use the following configuration:
+A version of this project is deployed under https://mcp.fredscho.people.aws.dev. If you want to test the project using Claude Desktop, use the following configuration:
 
 > [!CAUTION]
 > Make sure to install a reasonably recent version of Node.js.
-
 
 ```json
 {
@@ -54,3 +146,13 @@ This project is deployed under https://mcp.fredscho.people.aws.dev. If you want 
   }
 }
 ```
+
+## Live Demos and Related Resources
+
+1. [Remote MCP Server for a B2B Travel booking agent](https://amazon.awsapps.com/workdocs-amazon/index.html#/document/25f60b0412d3e7e55b33eb6207b3177136b7a07db9fe90be025fd4302e2a897b) 
+2. Bedrock powered MCP clients with UI hosted on AWS + CLI with remote server support:
+   - [Live Demo Client 1](https://amazon.awsapps.com/workdocs-amazon/index.html#/document/b431ce7582b2ff212adc04b66bcb9f9adc3aeef638c29a2d60e69e56b6cbfc9e)
+   - [Client 2](https://amazon.awsapps.com/workdocs-amazon/index.html#/document/4e0f90886d542843bc95313204f40ba5879a17078eaed2544e1ce8f378f02ee6)
+   - [Python Client](https://amazon.awsapps.com/workdocs-amazon/index.html#/document/9c61d036d576a9ec4a30be0b80d7af96fff8f80a9c3fd2a9f920fea22b5f0a28)
+3. [Business narrative for internal and customer facing MCP/Agent enablement](https://quip-amazon.com/wjUNA49v3guV/MCP-Business-Working-Group)
+4. [MCP enablement session run by AWS Anthropic SA @nsmagt](https://broadcast.amazon.com/videos/1538819)

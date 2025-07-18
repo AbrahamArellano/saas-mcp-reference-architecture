@@ -1,5 +1,4 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import httpContext from "express-http-context";
 import metadata from "./metadata.js";
 import { listBookings } from "./tools/listBookings.js";
 import { coerce, z } from "zod";
@@ -64,8 +63,6 @@ const create = () => {
     },
     listFlights
   );
-
-  const tenantTier = httpContext.get("tenantTier");
 
   // if (tenantTier === "gold") {
   mcpServer.tool(

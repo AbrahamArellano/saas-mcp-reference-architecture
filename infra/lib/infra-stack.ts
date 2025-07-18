@@ -11,6 +11,16 @@ export class InfraStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
+    // Define the repository name
+    const repositoryName = process.env.ECR_REPOSITORY_NAME || "stateless-mcp-on-ecs";
+    
+    // Use existing repository - we assume it's already created by the server script
+    const repository = ecr.Repository.fromRepositoryName(
+      this,
+      'ExistingEcrRepository',
+      repositoryName
+    );
+
     const taskRole = new iam.Role(this, "TaskRole", {
       assumedBy: iam.ServicePrincipal.fromStaticServicePrincipleName(
         "ecs-tasks.amazonaws.com"
@@ -82,6 +92,9 @@ export class InfraStack extends cdk.Stack {
       })
     );
 
+    // Use the image tag from environment variable or default to 'latest'
+    const imageTag = process.env.IMAGE_TAG || 'latest';
+
     const service = new ecsPatterns.ApplicationLoadBalancedFargateService(
       this,
       "McpServerService",
@@ -89,14 +102,7 @@ export class InfraStack extends cdk.Stack {
         // cluster,
         memoryLimitMiB: 1024,
         taskImageOptions: {
-          image: ecs.ContainerImage.fromEcrRepository(
-            ecr.Repository.fromRepositoryName(
-              this,
-              "PrivateEcrRepository",
-              "stateless-mcp-on-ecs"
-            ),
-            "latest"
-          ),
+          image: ecs.ContainerImage.fromEcrRepository(repository, imageTag),
           environment: {
             TABLE_NAME: travelBookingsTable.tableName,
             ROLE_ARN: dynamoDbAccessRole.roleArn,
@@ -127,6 +133,12 @@ export class InfraStack extends cdk.Stack {
     service.targetGroup.configureHealthCheck({
       path: "/health",
       port: "3000",
+    });
+    
+    // Output the ALB DNS name
+    new cdk.CfnOutput(this, 'LoadBalancerDns', {
+      value: service.loadBalancer.loadBalancerDnsName,
+      description: 'The DNS name of the load balancer',
     });
   }
 }

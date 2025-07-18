@@ -1,7 +1,7 @@
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 import { Readable } from "stream";
-import httpContext from "express-http-context";
 import fs from "fs/promises";
+import { AuthInfo } from "../types/authInfo";
 
 async function readTravelPolicy() {
   try {
@@ -66,8 +66,11 @@ export async function getLocalFileTravelPolicy() {
   };
 }
 
-export async function getS3TravelPolicy() {
-  const tenantId = httpContext.get("tenantId");
+export async function getS3TravelPolicy(
+  params,
+  { authInfo: { tenantId } }: AuthInfo
+) {
+  // const tenantId = httpContext.get("tenantId");
   const policyContents = await readTravelPolicyS3(tenantId);
 
   return {

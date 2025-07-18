@@ -10,14 +10,22 @@ from aws_cdk import (
     aws_efs as efs,
     aws_cognito as cognito,
     aws_certificatemanager as acm,
+    aws_route53 as route53,
+    aws_route53_targets as route53_targets,
+    aws_cloudfront as cloudfront,
+    aws_cloudfront_origins as origins,
     Stack
 )
 from constructs import Construct
 import hashlib
+import os
 
 
 class EcsMcpStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs):
+        # Extract deployment_type from kwargs
+        deployment_type = kwargs.pop('deployment_type', 'route53')
+        
         super().__init__(scope, construct_id, **kwargs)
 
         # Generate unique suffix for naming
@@ -25,8 +33,35 @@ class EcsMcpStack(Stack):
         unique_hash = hashlib.sha256(unique_input.encode('utf-8')).hexdigest()[:8]
         suffix = unique_hash.lower()
 
-        # Custom domain configuration
-        domain_name = "mcp.myitbasics.com"
+        # Get domain configuration from environment variables
+        certificate_arn = os.environ.get('CERTIFICATE_ARN')
+        domain_name = os.environ.get('DOMAIN_NAME')
+        
+        # Route53 specific variables
+        hosted_zone_id = os.environ.get('HOSTED_ZONE_ID')
+        zone_name = os.environ.get('ZONE_NAME')
+        record_name = os.environ.get('RECORD_NAME_MCP')
+        cloudfront_prefix_list_id = os.environ.get('CLOUDFRONT_PREFIX_LIST_ID')
+
+        # Validate required environment variables based on deployment type
+        if deployment_type == 'route53':
+            required_vars = ['CERTIFICATE_ARN', 'HOSTED_ZONE_ID', 'ZONE_NAME', 'RECORD_NAME_MCP']
+            missing_vars = [var for var in required_vars if not os.environ.get(var)]
+            
+            if missing_vars:
+                raise ValueError(f"Missing required environment variables for route53 deployment: {', '.join(missing_vars)}")
+                
+            # Set the domain name for Cognito callback URLs
+            app_domain = record_name
+        else:  # domain_name deployment
+            required_vars = ['DOMAIN_NAME']
+            missing_vars = [var for var in required_vars if not os.environ.get(var)]
+            
+            if missing_vars:
+                raise ValueError(f"Missing required environment variables for domain_name deployment: {', '.join(missing_vars)}")
+                
+            # Set the domain name for Cognito callback URLs
+            app_domain = domain_name
 
         # Create VPC
         vpc = ec2.Vpc(
@@ -87,13 +122,30 @@ class EcsMcpStack(Stack):
             retention=logs.RetentionDays.ONE_WEEK
         )
 
-        # Create ACM Certificate for custom domain
-        certificate = acm.Certificate(
-            self, "McpCertificate",
-            domain_name=domain_name,
-            validation=acm.CertificateValidation.from_dns(),
-            subject_alternative_names=[domain_name]  # Explicit SAN
-        )
+        # Reference existing certificate or create a new one based on deployment type
+        if deployment_type == 'route53':
+            # Reference existing certificate
+            certificate = acm.Certificate.from_certificate_arn(
+                self,
+                "ExistingCertificate",
+                certificate_arn=certificate_arn
+            )
+            
+            # Reference existing Route53 hosted zone
+            hosted_zone = route53.HostedZone.from_hosted_zone_attributes(
+                self,
+                "Route53HostedZone",
+                hosted_zone_id=hosted_zone_id,
+                zone_name=zone_name
+            )
+        else:  # domain_name deployment
+            # Create ACM Certificate for custom domain
+            certificate = acm.Certificate(
+                self, "McpCertificate",
+                domain_name=domain_name,
+                validation=acm.CertificateValidation.from_dns(),
+                subject_alternative_names=[domain_name]  # Explicit SAN
+            )
 
         # Create IAM Task Execution Role
         task_execution_role = iam.Role(
@@ -157,11 +209,11 @@ class EcsMcpStack(Stack):
         )
 
         # CREATE COGNITO DOMAIN  
-        cognito_domain = cognito.UserPoolDomain(
-            self, "McpCognitoDomain",
-            user_pool=user_pool,
+        cognito_custom_domain = f"mcp-auth-{suffix}"
+        cognito_domain = user_pool.add_domain(
+            "McpCognitoDomain",
             cognito_domain=cognito.CognitoDomainOptions(
-                domain_prefix=f"mcp-auth-{suffix}"
+                domain_prefix=cognito_custom_domain
             )
         )
 
@@ -186,8 +238,8 @@ class EcsMcpStack(Stack):
                     cognito.OAuthScope.OPENID,
                     cognito.OAuthScope.PROFILE
                 ],
-                callback_urls=[f"https://{domain_name}/oauth2/idpresponse"],
-                logout_urls=[f"https://{domain_name}/oauth2/idpresponse"]
+                callback_urls=[f"https://{app_domain}/oauth2/idpresponse"],
+                logout_urls=[f"https://{app_domain}"]
             ),
             access_token_validity=cdk.Duration.hours(1),
             id_token_validity=cdk.Duration.hours(1),
@@ -314,16 +366,35 @@ class EcsMcpStack(Stack):
             allow_all_outbound=True
         )
 
-        # Allow HTTP and HTTPS access from anywhere
+        # Configure security group rules based on deployment type
+        if deployment_type == 'route53':
+            # Add CloudFront prefix list if provided
+            if cloudfront_prefix_list_id:
+                alb_security_group.add_ingress_rule(
+                    peer=ec2.Peer.prefix_list(cloudfront_prefix_list_id),
+                    connection=ec2.Port.tcp(443),
+                    description="Allow HTTPS traffic from CloudFront",
+                )
+            else:
+                # Fallback to allowing from anywhere
+                alb_security_group.add_ingress_rule(
+                    peer=ec2.Peer.any_ipv4(),
+                    connection=ec2.Port.tcp(443),
+                    description="Allow HTTPS from anywhere"
+                )
+        else:
+            # For domain_name deployment, allow HTTP and HTTPS access from anywhere
+            alb_security_group.add_ingress_rule(
+                peer=ec2.Peer.any_ipv4(),
+                connection=ec2.Port.tcp(443),
+                description="Allow HTTPS from anywhere"
+            )
+            
+        # Allow HTTP for redirect
         alb_security_group.add_ingress_rule(
             peer=ec2.Peer.any_ipv4(),
             connection=ec2.Port.tcp(80),
             description="Allow HTTP from anywhere"
-        )
-        alb_security_group.add_ingress_rule(
-            peer=ec2.Peer.any_ipv4(),
-            connection=ec2.Port.tcp(443),
-            description="Allow HTTPS from anywhere"
         )
 
         # Allow ALB to reach ECS on port 8502
@@ -390,11 +461,62 @@ class EcsMcpStack(Stack):
             )
         )
 
+        # Add CloudFront distribution
+        if deployment_type == 'route53':
+            cloudfront_distribution = cloudfront.Distribution(
+                self,
+                "McpDistribution",
+                default_behavior=cloudfront.BehaviorOptions(
+                    origin=origins.LoadBalancerV2Origin(
+                        alb,
+                        protocol_policy=cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+                        origin_ssl_protocols=[cloudfront.OriginSslPolicy.TLS_V1_2]
+                    ),
+                    viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                    allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
+                    cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
+                    origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER,
+                ),
+                domain_names=[record_name],
+                certificate=certificate,
+                enable_ipv6=False
+            )
+
+            # Add Route 53 A Alias record
+            route53.ARecord(
+                self, "McpRecord",
+                zone=hosted_zone,
+                record_name=record_name,
+                target=route53.RecordTarget.from_alias(
+                    route53_targets.CloudFrontTarget(cloudfront_distribution)
+                )
+            )
+        else:
+            # For domain_name deployment, create CloudFront without Route53 integration
+            cloudfront_distribution = cloudfront.Distribution(
+                self,
+                "McpDistribution",
+                default_behavior=cloudfront.BehaviorOptions(
+                    origin=origins.LoadBalancerV2Origin(
+                        alb,
+                        protocol_policy=cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+                        origin_ssl_protocols=[cloudfront.OriginSslPolicy.TLS_V1_2]
+                    ),
+                    viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                    allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
+                    cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
+                    origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER,
+                ),
+                domain_names=[domain_name],
+                certificate=certificate,
+                enable_ipv6=False
+            )
+
         # Outputs
         cdk.CfnOutput(
             self, "LoadBalancerUrl",
-            value=f"https://{domain_name}",
-            description="HTTPS URL to access the MCP Application (now with Cognito auth)"
+            value=f"https://{app_domain}",
+            description="HTTPS URL to access the MCP Application"
         )
 
         cdk.CfnOutput(
@@ -423,7 +545,7 @@ class EcsMcpStack(Stack):
 
         cdk.CfnOutput(
             self, "CognitoLoginUrl",
-            value=f"https://{cognito_domain.domain_name}.auth.{self.region}.amazoncognito.com/login?client_id={app_client.user_pool_client_id}&response_type=code&scope=email+openid+profile&redirect_uri=https://{domain_name}/",
+            value=f"https://{cognito_domain.domain_name}.auth.{self.region}.amazoncognito.com/login?client_id={app_client.user_pool_client_id}&response_type=code&scope=email+openid+profile&redirect_uri=https://{app_domain}/",
             description="Cognito Hosted UI Login URL"
         )
 

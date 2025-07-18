@@ -3,7 +3,7 @@ import { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { getDynamoDbClient, TABLE_NAME } from "../services/dynamoDb";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { HotelBooking } from "../types/booking";
-import httpContext from "express-http-context";
+import { AuthInfo } from "../types/authInfo";
 
 export interface HotelInfo {
   checkIn: Date;
@@ -184,24 +184,27 @@ export async function listHotels({
   };
 }
 
-export async function bookHotel({
-  hotelName,
-  checkIn,
-  checkOut,
-  roomType,
-  guests,
-  loyaltyNumber,
-}: {
-  hotelName: string;
-  checkIn: Date;
-  checkOut: Date;
-  roomType: string;
-  guests: number;
-  loyaltyNumber?: string;
-}) {
+export async function bookHotel(
+  {
+    hotelName,
+    checkIn,
+    checkOut,
+    roomType,
+    guests,
+    loyaltyNumber,
+  }: {
+    hotelName: string;
+    checkIn: Date;
+    checkOut: Date;
+    roomType: string;
+    guests: number;
+    loyaltyNumber?: string;
+  },
+  { authInfo: { tenantId } }: AuthInfo
+) {
   // await new Promise((resolve) => setTimeout(resolve, 1000));
 
-  const tenantId = httpContext.get("tenantId");
+  // const tenantId = httpContext.get("tenantId");
   const scenario = faker.number.int({ min: 1, max: 4 });
 
   switch (scenario) {

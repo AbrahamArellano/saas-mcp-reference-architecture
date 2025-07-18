@@ -1,8 +1,8 @@
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import httpContext from "express-http-context";
 import { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { getDynamoDbClient, TABLE_NAME } from "../services/dynamoDb";
 import { Booking } from "../types/booking";
+import { AuthInfo } from "../types/authInfo";
 
 // Query Functions
 async function getBookingsByTenant(tenantId: string): Promise<Booking[]> {
@@ -76,14 +76,16 @@ async function getBookingById(
   }
 }
 
-export const listBookings = async ({
-  type,
-  id,
-}: {
+interface ListBookingsParams {
   type?: "HOTEL" | "FLIGHT" | "ALL";
   id?: string;
-}): Promise<CallToolResult> => {
-  const tenantId = httpContext.get("tenantId");
+}
+
+export const listBookings = async (
+  { type, id }: ListBookingsParams,
+  { authInfo: { tenantId } }: AuthInfo
+): Promise<CallToolResult> => {
+  // const tenantId = httpContext.get("tenantId");
 
   if (tenantId === undefined)
     return {
