@@ -5,6 +5,7 @@ import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as s3 from "aws-cdk-lib/aws-s3";
+import * as cognito from "aws-cdk-lib/aws-cognito";
 import { Construct } from "constructs";
 
 export interface ApplicationStackProps extends cdk.StackProps {
@@ -13,6 +14,9 @@ export interface ApplicationStackProps extends cdk.StackProps {
   mcpServerPolicyBucket: s3.Bucket;
   mcpServerTaskRole: iam.Role;
   mcpServerDynamoDbAccessRole: iam.Role;
+  mcpServerUserPool: cognito.UserPool;
+  mcpServerUserPoolClient: cognito.UserPoolClient;
+  mcpServerUserPoolDomain: cognito.UserPoolDomain;
 }
 
 export class ApplicationStack extends cdk.Stack {
@@ -44,11 +48,15 @@ export class ApplicationStack extends cdk.Stack {
             TABLE_NAME: props.mcpServerTravelBookingsTable.tableName,
             ROLE_ARN: props.mcpServerDynamoDbAccessRole.roleArn,
             BUCKET_NAME: props.mcpServerPolicyBucket.bucketName,
+            COGNITO_USER_POOL_ID: props.mcpServerUserPool.userPoolId,
+            COGNITO_CLIENT_ID: props.mcpServerUserPoolClient.userPoolClientId,
+            COGNITO_DOMAIN: props.mcpServerUserPoolDomain.domainName,
+            AWS_REGION: this.region,
           },
           containerPort: 3000,
           taskRole: props.mcpServerTaskRole,
         },
-        desiredCount: 2,
+        desiredCount: 1,
         minHealthyPercent: 100,
         publicLoadBalancer: true,
         loadBalancerName: "MCPServer", // Set a specific name prefix for the ALB

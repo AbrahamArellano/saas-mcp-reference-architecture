@@ -23,6 +23,9 @@ const mcpServerApplicationStack = new ApplicationStack(app, 'MCPServerApplicatio
   mcpServerPolicyBucket: mcpServerServicesStack.mcpServerPolicyBucket,
   mcpServerTaskRole: mcpServerServicesStack.mcpServerTaskRole,
   mcpServerDynamoDbAccessRole: mcpServerServicesStack.mcpServerDynamoDbAccessRole,
+  mcpServerUserPool: mcpServerServicesStack.mcpServerUserPool,
+  mcpServerUserPoolClient: mcpServerServicesStack.mcpServerUserPoolClient,
+  mcpServerUserPoolDomain: mcpServerServicesStack.mcpServerUserPoolDomain,
   
   /* Use the same environment as the services stack */
   env: env

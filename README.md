@@ -6,76 +6,31 @@ This repository contains an MCP server using the Streamable HTTP transport writt
 
 ![Architecture Overview](/resources/mcp_hackathon.png)
 
-## MCP Server development and deployment
+## MCP Server
 
-This repository is organized into several key components for MCP server development and deployment:
+For detailed information, see the [MCP Server README](./mcp_server/README.md).
 
-### MCP Server development
+The MCP server implementation is organized into two main components:
 
-- [Server README](./server/README.md)
+- **[Server Implementation](./mcp_server/src/)**: Core MCP server code with tools, resources, and authentication
+- **[Infrastructure](./mcp_server/infra/)**: CDK project for AWS deployment
 
-The `server` folder contains the core MCP server implementation:
+### Quick Start
 
-- **Core Components**: 
-  - `index.js` - Main entry point with authentication logic
-  - `mcp-server.js` - MCP server implementation and tool/resource registration
-  
-- **MCP Components**:
-  - `resources/` - MCP resources implementation
-  - `tools/` - MCP tools implementation
-  
-- **Supporting Code**:
-  - `services/` - Internal services for the MCP server
-  - `types/` - TypeScript type definitions
-  
-- **Development Scripts**:
-  - `pushDockerImage.sh` - Builds and pushes the container image to a private ECR repository using Docker or Finch
-  - `createToken.js` - Creates JWT tokens for testing
+```bash
+# Deploy services stack
+cd mcp_server/infra
+./deploy.sh --services-only
 
-### MCP Server deployment
+# Build and push Docker image
+cd ../src
+./scripts/buildDockerImage.sh  # Build only
+./scripts/pushDockerImage.sh   # Build and push to ECR
 
-- [Infrastructure README](./infra/README.md)
-
-The `infra` folder contains a CDK project that deploys the MCP server to ECS using a split stack architecture:
-
-- **MCPServerServicesStack**: Contains the foundational resources (DynamoDB, S3, IAM)
-- **MCPServerApplicationStack**: Contains the application resources (ECS, ALB, VPC)
-
-#### Deployment Workflow
-
-The infrastructure is split into two stacks to facilitate local development and deployment:
-
-1. Deploy the services stack for local development
-2. Build and push the container image to ECR
-3. Deploy the application stack
-
-For detailed deployment instructions and options, please refer to the [Infrastructure README](./infra/README.md).
-
-### MCP Server Security Features
-
-The MCP server implementation includes several security features:
-
-1. **Multi-tenant Data Isolation**:
-   - Uses STS session tagging for tenant context
-   - DynamoDB access control using the `dynamodb:LeadingKeys` condition
-   - Role-based access control for administrative functions
-
-2. **Authentication**:
-   - JWT-based authentication for API access
-   - Token validation and tenant identification
-
-3. **Network Security**:
-   - Optional HTTPS support with TLS certificates
-   - Load balancer with health checks
-
-### MCP Server Customization and Extension
-
-The MCP server can be extended with additional tools and resources:
-
-1. Add new MCP tools in the `server/tools` directory
-2. Add new MCP resources in the `server/resources` directory
-3. Register them in `mcp-server.js`
-
+# Deploy application stack
+cd ../infra
+./deploy.sh --application-only
+```
 
 ## MCP Client Implementations
 
@@ -83,9 +38,9 @@ This repository includes three different MCP client implementations, each showca
 
 ### Production-Ready Client with Dynamic Server Management
 
-- [Client README](./client_add_server_on_the_fly/README.md)
+- [Client README](./mcp_clients/streamlit-client/README.md)
 
-The `client_add_server_on_the_fly` folder contains a production-ready MCP client with comprehensive features for enterprise deployment:
+The `mcp_clients/streamlit-client` folder contains a production-ready MCP client with comprehensive features for enterprise deployment:
 
 - **Architecture**: Built with Streamlit frontend and FastAPI backend
 - **Security**: AWS Cognito authentication with infrastructure-level security
@@ -100,7 +55,7 @@ This implementation is ideal for production deployments requiring robust securit
 
 ### Lightweight Python Client with Model Integration
 
-The `mcp-client-with-model` folder contains a lightweight Python implementation that demonstrates direct integration between MCP and language models:
+The `mcp_clients/lightweight-client` folder contains a lightweight Python implementation that demonstrates direct integration between MCP and language models:
 
 - **Architecture**: Pure Python implementation with HTTP streaming support
 - **Features**:
@@ -112,9 +67,9 @@ This implementation is ideal for developers looking to understand the core mecha
 
 ### Strands Agents Integration
 
-- [Strands Agents README](./strands-agents-mcp/README.md)
+- [Strands Agents README](./mcp_clients/strands-agents-client/README.md)
 
-The `strands-agents-mcp` folder demonstrates integration between MCP and the Strands Agents framework:
+The `mcp_clients/strands-agents-client` folder demonstrates integration between MCP and the Strands Agents framework:
 
 - **Architecture**: Python-based integration between Strands Agents and MCP
 - **Features**:

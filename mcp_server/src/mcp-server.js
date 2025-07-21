@@ -13,6 +13,7 @@ import {
   getLocalFileTravelPolicy,
   getS3TravelPolicy,
 } from "./resources/travelPolicy.js";
+import whoami from "./tools/whoami.js";
 
 let SHORT_DELAY = true;
 const LONG_DELAY_MS = 100;
@@ -41,6 +42,13 @@ const create = () => {
     "CompanyTravelPolicyPerTenant",
     "travelpolicy://tenant",
     getS3TravelPolicy
+  );
+
+  // Register the whoami tool - accessible without authentication
+  mcpServer.tool(
+    "whoami",
+    "Returns information about the current user based on their JWT token. Works with or without authentication.",
+    whoami
   );
 
   mcpServer.tool(

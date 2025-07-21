@@ -3,7 +3,7 @@
 # Default values
 SERVICES_STACK_NAME="MCPServerServicesStack"
 APPLICATION_STACK_NAME="MCPServerApplicationStack"
-CERTIFICATE_ARN=""
+CERTIFICATE_ARN="arn:aws:acm:us-east-1:777200923596:certificate/9697ac7e-4703-4ac4-bb8d-07dd45a0a118"
 ECR_REPOSITORY_NAME="mcp-server-on-ecs"
 IMAGE_TAG="latest"
 ADMIN_ROLE_NAME=""
@@ -115,7 +115,7 @@ if [ "$DEPLOY_APPLICATION" = "true" ]; then
     echo "Checking if ECR repository '$ECR_REPOSITORY_NAME' exists..."
     if ! aws ecr describe-repositories --repository-names "$ECR_REPOSITORY_NAME" --region "$AWS_REGION" &> /dev/null; then
         echo "ERROR: ECR repository '$ECR_REPOSITORY_NAME' does not exist."
-        echo "Please run the pushDockerImage.sh script in the server directory first to create the repository and push the image."
+        echo "Please run the pushDockerImage.sh script in the mcp_server/src directory first to create the repository and push the image."
         exit 1
     fi
     echo "ECR repository '$ECR_REPOSITORY_NAME' exists. Proceeding with deployment."
@@ -139,9 +139,9 @@ if [ "$DEPLOY_SERVICES" = "true" ]; then
     
     echo "Starting MCP Server services deployment..."
     if [ "$NO_ROLLBACK" = "true" ]; then
-        npx cdk deploy "$SERVICES_STACK_NAME" --require-approval never --no-rollback
+        npx cdk deploy "$SERVICES_STACK_NAME" --require-approval never --no-rollback --exclusively
     else
-        npx cdk deploy "$SERVICES_STACK_NAME" --require-approval never
+        npx cdk deploy "$SERVICES_STACK_NAME" --require-approval never --exclusively
     fi
     
     # Check if services deployment was successful
@@ -167,9 +167,9 @@ if [ "$DEPLOY_APPLICATION" = "true" ]; then
     
     echo "Starting MCP Server application deployment..."
     if [ "$NO_ROLLBACK" = "true" ]; then
-        npx cdk deploy "$APPLICATION_STACK_NAME" --require-approval never --no-rollback
+        npx cdk deploy "$APPLICATION_STACK_NAME" --require-approval never --no-rollback --exclusively
     else
-        npx cdk deploy "$APPLICATION_STACK_NAME" --require-approval never
+        npx cdk deploy "$APPLICATION_STACK_NAME" --require-approval never --exclusively
     fi
     
     # Check if application deployment was successful

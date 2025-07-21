@@ -30,6 +30,26 @@ export default {
 
     get methodNotAllowed(){
         return build(-32000, 'Method not allowed');
+    },
+
+    get invalidToken(){
+        return build(-32001, 'Authentication failed: Invalid or expired token');
+    },
+
+    get tokenVerificationFailed(){
+        return build(-32002, 'Authentication failed: Token verification error');
+    },
+    
+    get missingToken(){
+        return build(-32003, 'Authentication failed: No authorization token provided');
+    },
+    
+    get invalidAuthFormat(){
+        return build(-32004, 'Authentication failed: Invalid authorization format');
+    },
+    
+    get emptyToken(){
+        return build(-32005, 'Authentication failed: Empty token provided');
     }
 
 }

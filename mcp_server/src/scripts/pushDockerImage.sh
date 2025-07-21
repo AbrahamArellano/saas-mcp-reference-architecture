@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # Default values
-export ECR_REPO=mcp-server-on-ecs
-export ECR_IMAGE_TAG=latest
-export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+export ECR_REPO=${ECR_REPO:-mcp-server-on-ecs}
+export ECR_IMAGE_TAG=${ECR_IMAGE_TAG:-latest}
+export AWS_ACCOUNT_ID=${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query 'Account' --output text)}
 export AWS_REGION=${AWS_REGION:-us-east-1}
 export ECR_REPO_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$ECR_IMAGE_TAG
 
@@ -65,10 +65,6 @@ else
   exit 1
 fi
 
-# Increment app version
-echo "Incrementing app version..."
-npm version patch
-
 # Create repository if it doesn't exist
 if [ "$REPO_EXISTS" = false ]; then
   echo "Creating ECR repository..."
@@ -83,26 +79,16 @@ else
   aws ecr get-login-password --region $AWS_REGION | finch login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
 fi
 
-# Build and push image
+# Build the Docker image using buildDockerImage.sh
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 echo "Building MCP Server image for $ECR_REPO_URI..."
+$SCRIPT_DIR/buildDockerImage.sh
 
-# Check if running in SageMaker environment
-if [[ "$HOME" == *"sagemaker-user"* ]]; then
-  NETWORK_OPTION="--network sagemaker"
-  echo "Detected SageMaker environment, using network option: $NETWORK_OPTION"
-else
-  NETWORK_OPTION=""
-fi
-
+# Push the image to ECR
+echo "Pushing MCP Server image to ECR..."
 if [ "$CONTAINER_TOOL" = "docker" ]; then
-  docker build --platform linux/amd64 $NETWORK_OPTION -t $ECR_REPO_URI .
-  
-  echo "Pushing MCP Server image to ECR..."
   docker push $ECR_REPO_URI
 else
-  finch build --platform linux/amd64 $NETWORK_OPTION --provenance=false -t $ECR_REPO_URI .
-  
-  echo "Pushing MCP Server image to ECR..."
   finch push $ECR_REPO_URI --platform linux/amd64
 fi
 
