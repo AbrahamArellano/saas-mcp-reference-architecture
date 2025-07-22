@@ -33,6 +33,7 @@ const create = (isAuthenticated = true) => {
     {
       capabilities: {
         tools: {},
+        prompts: {},
       },
     }
   );
