@@ -35,6 +35,12 @@ This directory contains the source code for the Model Context Protocol (MCP) ser
 The MCP server implements the following tools:
 
 1. `whoami` - Returns information about the current user (works without authentication)
+   - This tool is always available, even for unauthenticated users
+   - It can be used to check authentication status and token information
+   - It accepts both signed and unsigned tokens
+   - For unsigned tokens, it will show token information but mark `authenticated: false`
+   - For signed tokens verified with Cognito, it will show `authenticated: true`
+   - Response includes user info, token details, and environment information
 2. `list_bookings` - Get an overview of a user's bookings
 3. `find_flights` - Search for available flights
 4. `book_flight` - Book a flight

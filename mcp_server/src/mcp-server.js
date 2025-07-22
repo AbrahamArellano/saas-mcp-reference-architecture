@@ -14,14 +14,16 @@ import {
   getS3TravelPolicy,
 } from "./resources/travelPolicy.js";
 import whoami from "./tools/whoami.js";
-import { registerPromptHandlers } from './prompts.js';
+import log4js from "log4js";
 
-
+const l = log4js.getLogger();
 let SHORT_DELAY = true;
 const LONG_DELAY_MS = 100;
 const SHORT_DELAY_MS = 50;
 
-const create = () => {
+const create = (isAuthenticated = true) => {
+  l.debug(`Creating MCP server with isAuthenticated=${isAuthenticated}`);
+  
   const mcpServer = new McpServer(
     {
       name: "demo-mcp-server",
@@ -30,120 +32,100 @@ const create = () => {
     {
       capabilities: {
         tools: {},
-        prompts: {},  // Add prompts capability
       },
     }
   );
 
-  mcpServer.resource(
-    "CompanyTravelPolicy",
-    "file://travel/policy",
-    getLocalFileTravelPolicy
-  );
-
-  mcpServer.resource(
-    "CompanyTravelPolicyPerTenant",
-    "travelpolicy://tenant",
-    getS3TravelPolicy
-  );
-
-  // Register the whoami tool - accessible without authentication
+  // Always register the whoami tool - accessible without authentication
   mcpServer.tool(
     "whoami",
     "Returns information about the current user based on their JWT token. Works with or without authentication.",
     whoami
   );
 
-  mcpServer.tool(
-    "list_bookings",
-    "Get an overview of a user's bookings and optionally filter them by type or ID.",
-    {
-      id: z.optional(z.string()),
-      type: z.optional(z.enum(["ALL", "HOTEL", "FLIGHT"])),
-    },
-    listBookings
-  );
+  // Only register other tools if the user is authenticated
+  if (isAuthenticated) {
+    l.debug("Registering authenticated tools");
+    
+    mcpServer.resource(
+      "CompanyTravelPolicy",
+      "file://travel/policy",
+      getLocalFileTravelPolicy
+    );
 
-  mcpServer.tool(
-    "find_flights",
-    "Search for available flights between two locations on a given date.",
-    {
-      origin: z.string(),
-      destination: z.string(),
-      departure: z.string().date(),
-    },
-    listFlights
-  );
+    mcpServer.resource(
+      "CompanyTravelPolicyPerTenant",
+      "travelpolicy://tenant",
+      getS3TravelPolicy
+    );
 
-  // if (tenantTier === "gold") {
-  mcpServer.tool(
-    "book_flight",
-    "Book a flight using its flight number, departure date and time as well as the flight class and an optional frequent flyer number.",
-    {
-      flightNumber: z.string(),
-      departure: z.string().date(),
-      flightClass: z.string(),
-      frequentFlyerNumber: z.optional(z.string()),
-    },
-    bookFlight
-  );
+    mcpServer.tool(
+      "list_bookings",
+      "Get an overview of a user's bookings and optionally filter them by type or ID.",
+      {
+        id: z.optional(z.string()),
+        type: z.optional(z.enum(["ALL", "HOTEL", "FLIGHT"])),
+      },
+      listBookings
+    );
 
-  mcpServer.tool(
-    "book_hotel",
-    "Book a hotel room by providing the hotel name, check-in and check-out dates, room type, number of guests (1-10), and an optional loyalty program number",
-    {
-      hotelName: z.string(),
-      checkIn: z.string().date(),
-      checkOut: z.string().date(),
-      roomType: z.string(),
-      guests: coerce.number().int().min(1).max(10).default(1),
-      loyaltyNumber: z.optional(z.string()),
-    },
-    bookHotel
-  );
-  // }
+    mcpServer.tool(
+      "find_flights",
+      "Search for available flights between two locations on a given date.",
+      {
+        origin: z.string(),
+        destination: z.string(),
+        departure: z.string().date(),
+      },
+      listFlights
+    );
 
-  mcpServer.tool(
-    "list_hotels",
-    "Search for available hotels in a specified city for given check-in and check-out dates, with the number of guests (1-10).",
-    {
-      city: z.string(),
-      checkIn: z.string().date(),
-      checkOut: z.string().date(),
-      guests: coerce.number().int().min(1).max(10).default(1),
-    },
-    listHotels
-  );
+    mcpServer.tool(
+      "book_flight",
+      "Book a flight using its flight number, departure date and time as well as the flight class and an optional frequent flyer number.",
+      {
+        flightNumber: z.string(),
+        departure: z.string().date(),
+        flightClass: z.string(),
+        frequentFlyerNumber: z.optional(z.string()),
+      },
+      bookFlight
+    );
 
-  // mcpServer.tool(
-  //   "change_hotel_booking",
-  //   {
-  //     confirmationNumber: z.string(),
-  //     modification: z.object({
-  //       type: z.enum([
-  //         "CHANGE_DATES",
-  //         "UPGRADE_ROOM",
-  //         "MODIFY_GUESTS",
-  //         "ADD_SERVICES",
-  //       ]),
-  //       newCheckIn: z.optional(z.string().date()),
-  //       newCheckOut: z.optional(z.string().date()),
-  //       newRoomType: z.optional(z.string()),
-  //       guestCount: z.optional(coerce.number().int().min(1).max(10)),
-  //       additionalServices: z.optional(z.array(z.string())),
-  //     }),
-  //   },
-  //   modifyHotelBooking
-  // );
+    mcpServer.tool(
+      "book_hotel",
+      "Book a hotel room by providing the hotel name, check-in and check-out dates, room type, number of guests (1-10), and an optional loyalty program number",
+      {
+        hotelName: z.string(),
+        checkIn: z.string().date(),
+        checkOut: z.string().date(),
+        roomType: z.string(),
+        guests: coerce.number().int().min(1).max(10).default(1),
+        loyaltyNumber: z.optional(z.string()),
+      },
+      bookHotel
+    );
 
-  mcpServer.tool(
-    "loyalty_info",
-    "Get the user's participation status in Airline and Hotel Loyalty programs",
-    getLoyaltyProgramInfo
-  );
-  
-  // Register prompt handlers
-  registerPromptHandlers(mcpServer);
+    mcpServer.tool(
+      "list_hotels",
+      "Search for available hotels in a specified city for given check-in and check-out dates, with the number of guests (1-10).",
+      {
+        city: z.string(),
+        checkIn: z.string().date(),
+        checkOut: z.string().date(),
+        guests: coerce.number().int().min(1).max(10).default(1),
+      },
+      listHotels
+    );
+
+    mcpServer.tool(
+      "loyalty_info",
+      "Get the user's participation status in Airline and Hotel Loyalty programs",
+      getLoyaltyProgramInfo
+    );
+  } else {
+    l.debug("Only registering whoami tool for unauthenticated user");
+  }
 
   return mcpServer;
 };

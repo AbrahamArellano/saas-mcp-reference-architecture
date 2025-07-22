@@ -15,6 +15,8 @@ The MCP server implementation is organized into two main components:
 - **[Server Implementation](./mcp_server/src/)**: Core MCP server code with tools, resources, and authentication
 - **[Infrastructure](./mcp_server/infra/)**: CDK project for AWS deployment
 
+For a guided walkthrough of the MCP server features, including deployment, user registration, authentication, and testing with different tokens, see the [Demo Experience Guide](./demo_experience.md).
+
 ### Quick Start
 
 ```bash

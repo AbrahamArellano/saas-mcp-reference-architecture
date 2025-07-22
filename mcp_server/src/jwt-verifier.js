@@ -87,42 +87,119 @@ export function verifyToken(token) {
 }
 
 /**
- * Decode JWT without verification (fallback for development/testing)
- * This should only be used when COGNITO_USER_POOL_ID is not set
+ * Decode JWT without verification (for development/testing and public endpoints)
  */
 export function decodeTokenUnsafe(token) {
-  l.warn('Using unsafe JWT decode - this should only be used for development/testing');
+  l.debug('Using JWT decode without verification');
   return jwt.decode(token);
+}
+
+/**
+ * Create a default auth object for anonymous users
+ */
+export function createAnonymousAuth() {
+  return {
+    user: {},
+    token: "",
+    userId: "anonymous",
+    tenantId: "",
+    tenantTier: "basic",
+  };
+}
+
+/**
+ * Extract token from authorization header
+ */
+export function extractToken(authHeader) {
+  if (!authHeader) {
+    return null;
+  }
+  
+  if (!authHeader.startsWith("Bearer ")) {
+    return null;
+  }
+  
+  const token = authHeader.substring(7).trim();
+  if (token === "") {
+    return null;
+  }
+  
+  return token;
+}
+
+/**
+ * Check if a token is using the 'none' algorithm or is otherwise unsigned
+ */
+export function isUnsignedToken(token) {
+  try {
+    // Check for empty or invalid token
+    if (!token || token.trim() === "") {
+      return true;
+    }
+    
+    // Decode the token header
+    const parts = token.split('.');
+    if (parts.length < 2) return true; // Malformed token
+    
+    const headerStr = Buffer.from(parts[0], 'base64').toString();
+    const header = JSON.parse(headerStr);
+    
+    // Check if algorithm is 'none' or missing
+    return header.alg === 'none' || !header.alg || !header.kid;
+  } catch (error) {
+    l.error(`Error checking token signature: ${error.message}`);
+    return true; // Assume unsigned if we can't parse it
+  }
 }
 
 /**
  * Main function to handle JWT processing
  * Will use verification if Cognito is configured, otherwise falls back to unsafe decode
  */
-export async function processJwt(bearer) {
+export async function processJwt(bearer, allowAnonymous = false) {
   l.debug("Processing Authorization header: " + (bearer ? bearer.substring(0, 20) + "..." : "undefined"));
 
-  // Check if Authorization header is missing entirely
-  if (!bearer) {
-    l.error("Authorization header is missing");
-    throw new Error("Authentication failed: No authorization token provided. Please include a Bearer token in the Authorization header.");
-  }
-
-  // Extract JWT token from Authorization header
-  if (!bearer.startsWith("Bearer ")) {
-    l.error("Authorization header does not start with 'Bearer '");
-    throw new Error("Authentication failed: Invalid authorization format. Authorization header must start with 'Bearer '.");
-  }
-
-  const token = bearer.split(" ")[1];
+  // Extract token from authorization header
+  const token = extractToken(bearer);
   
-  // Check if token is empty
-  if (!token || token.trim() === "") {
-    l.error("Bearer token is empty");
-    throw new Error("Authentication failed: Empty token provided. Please include a valid JWT token.");
+  // Check if token is missing or empty
+  if (!token) {
+    if (allowAnonymous) {
+      l.debug("No valid token found, but anonymous access is allowed");
+      return createAnonymousAuth();
+    }
+    l.error("No valid token found");
+    throw new Error("Authentication failed: No authorization token provided. Please include a valid Bearer token in the Authorization header.");
   }
   
   l.debug("Token extracted: " + token.substring(0, 20) + "...");
+
+  // Check if the token is unsigned or uses the 'none' algorithm
+  const tokenIsUnsigned = isUnsignedToken(token);
+  if (tokenIsUnsigned) {
+    l.debug("Token is unsigned or uses 'none' algorithm");
+    
+    if (!allowAnonymous) {
+      l.error("Unsigned tokens are not allowed for protected endpoints");
+      throw new Error("Authentication failed: Unsigned tokens are not accepted for this endpoint.");
+    }
+    
+    // For public endpoints, we'll accept unsigned tokens but decode them without verification
+    const decodedData = decodeTokenUnsafe(token);
+    if (!decodedData) {
+      l.debug("Failed to decode unsigned token, returning anonymous auth");
+      return createAnonymousAuth();
+    }
+    
+    l.debug("Successfully decoded unsigned token");
+    return {
+      user: decodedData,
+      token: token,
+      userId: decodedData.sub || "anonymous",
+      tenantId: decodedData["custom:tenantId"] || decodedData.tenantId || "",
+      tenantTier: decodedData["custom:tenantTier"] || decodedData.tenantTier || "basic",
+    };
+  }
 
   let userData;
   
@@ -134,17 +211,27 @@ export async function processJwt(bearer) {
     } catch (error) {
       l.error(`Cognito JWT verification failed: ${error.message}`);
       
-      // Create more user-friendly error messages based on the error type
-      if (error.name === 'TokenExpiredError') {
-        throw new Error('Authentication failed: Your token has expired. Please log in again.');
-      } else if (error.name === 'JsonWebTokenError') {
-        throw new Error('Authentication failed: Invalid token format or signature.');
-      } else if (error.name === 'NotBeforeError') {
-        throw new Error('Authentication failed: Token not yet valid.');
-      } else if (error.message.includes('signing key')) {
-        throw new Error('Authentication failed: Token was not issued by the expected authority.');
+      if (allowAnonymous) {
+        l.debug("Token verification failed, but anonymous access is allowed. Trying to decode token without verification.");
+        userData = decodeTokenUnsafe(token);
+        
+        if (!userData) {
+          l.debug("Token decode failed, returning anonymous auth");
+          return createAnonymousAuth();
+        }
       } else {
-        throw new Error('Authentication failed: Token verification error.');
+        // Create more user-friendly error messages based on the error type
+        if (error.name === 'TokenExpiredError') {
+          throw new Error('Authentication failed: Your token has expired. Please log in again.');
+        } else if (error.name === 'JsonWebTokenError') {
+          throw new Error('Authentication failed: Invalid token format or signature.');
+        } else if (error.name === 'NotBeforeError') {
+          throw new Error('Authentication failed: Token not yet valid.');
+        } else if (error.message.includes('signing key')) {
+          throw new Error('Authentication failed: Token was not issued by the expected authority.');
+        } else {
+          throw new Error('Authentication failed: Token verification error.');
+        }
       }
     }
   } else {
@@ -152,8 +239,10 @@ export async function processJwt(bearer) {
     l.warn('COGNITO_USER_POOL_ID not set - using unsafe JWT decode');
     userData = decodeTokenUnsafe(token);
     
-    if (!userData) {
+    if (!userData && !allowAnonymous) {
       throw new Error('Authentication failed: Invalid token format.');
+    } else if (!userData) {
+      return createAnonymousAuth();
     }
   }
 
@@ -197,7 +286,7 @@ export async function processJwt(bearer) {
   return {
     user: userData,
     token: token,
-    userId: userData.sub,
+    userId: userData.sub || "anonymous",
     tenantId: userData["custom:tenantId"] || userData.tenantId || "",
     tenantTier: userData["custom:tenantTier"] || userData.tenantTier || "basic",
   };
