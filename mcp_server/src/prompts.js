@@ -1,16 +1,36 @@
 import { z } from "zod";
-import fs from 'fs';
+import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Load templates from JSON file
-function loadTemplatesFromJson() {
-  const templatesPath = path.join(__dirname, 'prompts', 'templates.json');
-  const templatesData = JSON.parse(fs.readFileSync(templatesPath, 'utf8'));
-  return templatesData.prompts;
+// Container-safe file loading with multiple path strategies
+async function loadTemplatesFromJson() {
+  const possiblePaths = [
+    path.join(process.cwd(), 'prompts', 'templates.json'),
+    path.join(__dirname, 'prompts', 'templates.json'),
+    path.join(__dirname, '..', 'prompts', 'templates.json'),
+    '/app/prompts/templates.json', // Container absolute path
+    'prompts/templates.json' // Relative from working directory
+  ];
+  
+  for (const templatesPath of possiblePaths) {
+    try {
+      const templatesData = await fs.readFile(templatesPath, 'utf8');
+      const parsed = JSON.parse(templatesData);
+      console.log(`Successfully loaded templates from: ${templatesPath}`);
+      return parsed.prompts;
+    } catch (error) {
+      // Continue trying next path
+      continue;
+    }
+  }
+  
+  console.error('Failed to load templates.json from any expected location');
+  console.error('Attempted paths:', possiblePaths);
+  throw new Error('templates.json not found in any expected location');
 }
 
 // Convert argument array to Zod schema
@@ -32,26 +52,50 @@ function convertArgumentsToZodSchema(argumentsArray) {
   return schemaObject;
 }
 
-// Load and convert prompt templates
-function loadPromptTemplates() {
-  const jsonTemplates = loadTemplatesFromJson();
-  const convertedTemplates = {};
-  
-  Object.keys(jsonTemplates).forEach(key => {
-    const template = jsonTemplates[key];
-    convertedTemplates[key] = {
-      name: template.name,
-      description: template.description,
-      arguments: convertArgumentsToZodSchema(template.arguments),
-      template: template.template
-    };
-  });
-  
-  return convertedTemplates;
+// Load and convert prompt templates with error handling
+async function loadPromptTemplates() {
+  try {
+    const jsonTemplates = await loadTemplatesFromJson();
+    const convertedTemplates = {};
+    
+    Object.keys(jsonTemplates).forEach(key => {
+      const template = jsonTemplates[key];
+      convertedTemplates[key] = {
+        name: template.name,
+        description: template.description,
+        arguments: convertArgumentsToZodSchema(template.arguments),
+        template: template.template
+      };
+    });
+    
+    console.log(`Successfully loaded ${Object.keys(convertedTemplates).length} prompt templates`);
+    return convertedTemplates;
+  } catch (error) {
+    console.error('Error loading prompt templates:', error.message);
+    // Return empty templates for graceful degradation
+    return {};
+  }
 }
 
-// Initialize prompt templates
-const promptTemplates = loadPromptTemplates();
+// Lazy loading with caching
+let promptTemplatesCache = null;
+let loadingPromise = null;
+
+async function getPromptTemplates() {
+  if (promptTemplatesCache) {
+    return promptTemplatesCache;
+  }
+  
+  if (loadingPromise) {
+    return loadingPromise;
+  }
+  
+  loadingPromise = loadPromptTemplates();
+  promptTemplatesCache = await loadingPromise;
+  loadingPromise = null;
+  
+  return promptTemplatesCache;
+}
 
 function processPromptTemplate(template, args = {}) {
   // Handle special cases
@@ -60,6 +104,11 @@ function processPromptTemplate(template, args = {}) {
   // Add default for preferences
   if (template.name === 'flight_search' && !processedArgs.preferences) {
     processedArgs.preferences = 'any flight is fine';
+  }
+  
+  // Add default for guests
+  if ((template.name === 'hotel_search' || template.name === 'book_hotel_demo') && !processedArgs.guests) {
+    processedArgs.guests = '1';
   }
   
   // Add budget text for policy_compliant_booking
@@ -75,76 +124,101 @@ function processPromptTemplate(template, args = {}) {
   });
 }
 
-export function registerPromptHandlers(mcpServer) {
-  // Check if the server has a prompt method
-  if (typeof mcpServer.prompt === 'function') {
-    // Register each prompt
-    Object.values(promptTemplates).forEach(promptDef => {
-      mcpServer.prompt(
-        promptDef.name,
-        promptDef.description,
-        promptDef.arguments,
-        async (args) => {
+export async function registerPromptHandlers(mcpServer) {
+  try {
+    const promptTemplates = await getPromptTemplates();
+    
+    // If no templates loaded, skip registration
+    if (Object.keys(promptTemplates).length === 0) {
+      console.warn('No prompt templates loaded, skipping prompt registration');
+      return;
+    }
+    
+    // Check if the server has a prompt method
+    if (typeof mcpServer.prompt === 'function') {
+      // Register each prompt
+      Object.values(promptTemplates).forEach(promptDef => {
+        mcpServer.prompt(
+          promptDef.name,
+          promptDef.description,
+          promptDef.arguments,
+          async (args) => {
+            const processedText = processPromptTemplate(promptDef, args);
+            return {
+              messages: [{
+                role: "user",
+                content: {
+                  type: "text",
+                  text: processedText
+                }
+              }]
+            };
+          }
+        );
+      });
+      
+      console.log(`Registered ${Object.keys(promptTemplates).length} prompts using native MCP support`);
+    } else {
+      console.error("MCP Server doesn't support prompt registration with .prompt() method");
+      
+      // Alternative: Try registering as a tool that returns prompt text
+      mcpServer.tool(
+        "get_prompt",
+        "Get a prompt template for various workflows",
+        {
+          name: z.enum([
+            'flight_search', 
+            'booking_flow', 
+            'loyalty_overview', 
+            'policy_compliant_booking',
+            'hotel_search',
+            'book_flight_demo',
+            'book_hotel_demo'
+          ]),
+          arguments: z.optional(z.record(z.string()))
+        },
+        async ({ name, arguments: args }) => {
+          const promptDef = promptTemplates[name];
+          if (!promptDef) {
+            return { error: `Unknown prompt: ${name}` };
+          }
+          
           const processedText = processPromptTemplate(promptDef, args);
           return {
-            messages: [{
-              role: "user",
-              content: {
-                type: "text",
-                text: processedText
-              }
+            content: [{
+              type: "text",
+              text: processedText
             }]
           };
         }
       );
-    });
-  } else {
-    console.error("MCP Server doesn't support prompt registration with .prompt() method");
-    
-    // Alternative: Try registering as a tool that returns prompt text
-    mcpServer.tool(
-      "get_prompt",
-      "Get a prompt template for various workflows",
-      {
-        name: z.enum(['flight_search', 'booking_flow', 'loyalty_overview', 'policy_compliant_booking']),
-        arguments: z.optional(z.record(z.string()))
-      },
-      async ({ name, arguments: args }) => {
-        const promptDef = promptTemplates[name];
-        if (!promptDef) {
-          return { error: `Unknown prompt: ${name}` };
+      
+      mcpServer.tool(
+        "list_prompts",
+        "List all available prompt templates",
+        {},
+        async () => {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify(
+                Object.values(promptTemplates).map(p => ({
+                  name: p.name,
+                  description: p.description,
+                  arguments: p.arguments
+                })),
+                null,
+                2
+              )
+            }]
+          };
         }
-        
-        const processedText = processPromptTemplate(promptDef, args);
-        return {
-          content: [{
-            type: "text",
-            text: processedText
-          }]
-        };
-      }
-    );
-    
-    mcpServer.tool(
-      "list_prompts",
-      "List all available prompt templates",
-      {},
-      async () => {
-        return {
-          content: [{
-            type: "text",
-            text: JSON.stringify(
-              Object.values(promptTemplates).map(p => ({
-                name: p.name,
-                description: p.description,
-                arguments: p.arguments
-              })),
-              null,
-              2
-            )
-          }]
-        };
-      }
-    );
+      );
+      
+      console.log(`Registered ${Object.keys(promptTemplates).length} prompts using fallback tool mechanism`);
+    }
+  } catch (error) {
+    console.error('Failed to register prompt handlers:', error.message);
+    // Continue without prompts for graceful degradation
   }
 }
