@@ -15,6 +15,7 @@ import {
 } from "./resources/travelPolicy.js";
 import whoami from "./tools/whoami.js";
 import log4js from "log4js";
+import { registerPromptHandlers } from './prompts.js';
 
 const l = log4js.getLogger();
 let SHORT_DELAY = true;
@@ -126,6 +127,9 @@ const create = (isAuthenticated = true) => {
   } else {
     l.debug("Only registering whoami tool for unauthenticated user");
   }
+
+  // Register prompt handlers
+  registerPromptHandlers(mcpServer);
 
   return mcpServer;
 };
