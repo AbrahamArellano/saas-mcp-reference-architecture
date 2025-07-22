@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 // prompts.js
 const promptTemplates = {
   flight_search: {
