@@ -14,6 +14,8 @@ import {
   getS3TravelPolicy,
 } from "./resources/travelPolicy.js";
 import whoami from "./tools/whoami.js";
+import { registerPromptHandlers } from './prompts.js';
+
 
 let SHORT_DELAY = true;
 const LONG_DELAY_MS = 100;
@@ -28,6 +30,7 @@ const create = () => {
     {
       capabilities: {
         tools: {},
+        prompts: {},  // Add prompts capability
       },
     }
   );
@@ -138,6 +141,9 @@ const create = () => {
     "Get the user's participation status in Airline and Hotel Loyalty programs",
     getLoyaltyProgramInfo
   );
+  
+  // Register prompt handlers
+  registerPromptHandlers(mcpServer);
 
   return mcpServer;
 };
